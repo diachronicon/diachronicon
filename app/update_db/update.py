@@ -1,749 +1,732 @@
-﻿import abc
+﻿"""app/update_db/update.py
+
+Import / refresh the Diachronicon database from the canonical Excel workbook.
+
+Sheets consumed:
+    cnstruct  — one row per construction formula
+    gen_inf   — display name, group number, links, publication status (130 rows)
+    ch        — diachronic changes (720 rows across 130 constructions)
+
+Usage (from project root):
+    python -m app.update_db.update --excel path/to/Diachronicon.xlsx
+    python -m app.update_db.update --excel path/to/Diachronicon.xlsx --clear
+    python -m app.update_db.update --excel path/to/Diachronicon.xlsx --dry-run
+
+Options:
+    --excel PATH   Path to the .xlsx workbook  (required)
+    --clear        Wipe and re-import everything (default: upsert)
+    --dry-run      Parse and validate without writing to the database
+    --verbose      Print per-row progress
+"""
+from __future__ import annotations
+
+import abc
 import argparse
-from collections import defaultdict
 import logging
-from functools import wraps
 import re
+import sys
 import traceback
 import typing as T
-from typing import (
-    Type, Tuple, List, Dict, Union, Callable, Iterator,
-    Literal, Any)
+from collections import defaultdict
+from pathlib import Path
 
-import openpyxl
-from openpyxl import load_workbook
-import openpyxl.worksheet
-import openpyxl.worksheet.worksheet
+import pandas as pd
 
-from ..models import (
-    UNKNOWN_SYNT_FUNCTION_OF_ANCHOR,
-    SYNT_FUNCTION_OF_ANCHOR_VALUES,
-    SEMANTICS_TAG,
-    MORPHOSYNTAX_TAG,
-    Construction,
-    ConstructionVariant,
-    GeneralInfo,
-    Change,
-    Constraint,
-    FormulaElement,
-    GeneralTag,
+logging.basicConfig(
+    format='%(levelname)s [%(name)s] %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
-
-
-logging.basicConfig(handlers=(logging.StreamHandler(),))
-print(__name__)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
-ORIG_SHEET_NAME2DB_TABLE_NAME = {
-    "cnstruct": "construction",
-    "gen_inf": "general_info",
-    "ch": "changes",
-    "cnstraint": "constraints",
+# ---------------------------------------------------------------------------
+# Column-name normalisation maps (Excel header → ORM field name)
+# ---------------------------------------------------------------------------
+
+CNSTRUCT_RENAME: T.Dict[str, str] = {
+    'construction_id':              'orig_id',
+    'contemporary meaning':         'contemporary_meaning',
+    'in russian constructicon':     'in_rus_constructicon',
+    'number in russian constructicon': 'rus_constructicon_id',
+}
+
+GEN_INF_RENAME: T.Dict[str, str] = {
+    'construction name': 'name',
+}
+
+CH_RENAME: T.Dict[str, str] = {
+    'construction formula': 'stage',
+    'former change':        'former_change',
+    'type of change':       'type_of_change',
+    'subtype of change':    'subtype_of_change',
+    'first entry':          'first_attested',
+    'last entry':           'last_attested',
+    'first example':        'first_example',
+    'last example':         'last_example',
 }
 
 
-SHEET_TO_CLASS = {
-    "construction": Construction,
-    "general_info": GeneralInfo,
-    "changes": Change,
-    "constraints": Constraint,
-}
+# ---------------------------------------------------------------------------
+# Formula tokenisation  (builds FormulaElement rows)
+# ---------------------------------------------------------------------------
+
+VARIANTS_SEPS: T.Tuple[str, ...] = ('/', '|')
 
 
-class StrLoweringDict(dict):
-    def get(self, item: str, default: Any = None):
-        # logger.debug(f"item requested: `{item}`")
-        # if default is None:
-        default = item.lower()
-        return super(StrLoweringDict, self).get(item, default)
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}({super().__repr__()})"
+class _EOF:
+    """Sentinel for end-of-iterator."""
 
 
-default_colname_correction = StrLoweringDict()
+EOF = _EOF()
 
 
-SHEET2COLUMN2CORRECTION = {
-    "general_info": StrLoweringDict({
-        "construction_name": "name",
-    }),
-    "construction": StrLoweringDict({
-        "construction_id": "id",
-        "in_russian_constructicon": "in_rus_constructicon",
-        "number_in_russian_constructicon": "rus_constructicon_id",
-        "constructicon_morphosyntags": "morphosyntags",
-        "constructicon_semantags": "semantags",
-    }),
-    "constraints": StrLoweringDict({
-        # "constraint_id": "id",
-        "syntactic_constraints": "syntactic",
-        "semantic_constraints": "semantic",
-    }),
-    "changes": StrLoweringDict({
-        "change_id": "id",
-        "part_of_construction_changed": "stage",
-        "formula_of_the_change": "stage",
-        "first_entry": "first_attested",
-        "last_entry": "last_attested",
-        "frequency_(trend)": "frequency_trend",
-    }),
-}
-
-
-SHEET2MUSTHAVE_COLUMNS = {
-    "general_info": {"construction_id"},
-    "changes": {"construction_id", "stage", "level"}
-}
-
-
-SHEET2DISCARDED_COLUMNS = {
-    "constraints": {"constraint_id"}
-}
-
-
-CONSTRUCTION_ID2VARIANTS_MET = {}
-CONSTRUCTION_ID2GENERAL_INFO_MET = {}
-# CONSTRUCTION_IDS 
-
-
-class EOF(object): ...
-
-VARIANTS_SEPS: T.Tuple[str, str] = ("/", "|")
-
-
-def read_until(
-    formula_it: Iterator, finish_at_predicate: Callable[[str], bool]
-) -> Tuple[str, Union[str, EOF]]:
-    res = []
+def _read_until(
+    it: T.Iterator, stop: T.Callable[[T.Any], bool]
+) -> T.Tuple[str, T.Any]:
+    buf: T.List[str] = []
     while True:
-        next_ = next(formula_it, EOF)
-        if finish_at_predicate(next_):
-            return "".join(res), next_
-        res.append(next_)
+        nxt = next(it, EOF)
+        if stop(nxt):
+            return ''.join(buf), nxt
+        buf.append(nxt)  # type: ignore[arg-type]
 
 
-# TODO: parse alternatives
 def tokenize_formula(
-    formula: str, elems_sep: str = " ",
-    span_start: str = "(", span_end: str = ")",
-    variants_seps: T.Tuple[str, ...] = VARIANTS_SEPS, 
-    are_span_symbs_optionality_symb=True,
-) -> List[Dict]:
-    """Tokenizes formula into word or span"""
-    SPECIAL = [elems_sep, span_start, span_end, *variants_seps, EOF]
-    # SPECIAL = [elems_sep, span_start, span_end, EOF]
+    formula: str,
+    elems_sep: str = ' ',
+    span_start: str = '(',
+    span_end: str = ')',
+    variants_seps: T.Tuple[str, ...] = VARIANTS_SEPS,
+) -> T.List[T.Dict]:
+    """Tokenise a construction formula into a nested token list."""
+    SPECIAL = {elems_sep, span_start, span_end, *variants_seps}
 
-    parts = cur_part = []
-    queue = [parts]
-
-    formula_it = iter(formula)
-    symbol = ""
+    parts: T.List[T.Dict] = []
+    cur_part: T.List[T.Dict] = parts
+    queue: T.List[T.List] = [parts]
+    it = iter(formula)
+    symbol: T.Any = ''
 
     while True:
-        symbol, prev = next(formula_it, EOF), symbol
-        # is_span_open = False
+        symbol, prev = next(it, EOF), symbol
 
-        # print("after read", symbol, prev, cur_part, parts, queue, sep="\n  ")
+        if symbol is EOF:
+            break
 
         if symbol not in SPECIAL:
-            cur_element, special = read_until(formula_it, lambda symbol: symbol in SPECIAL)
-
-            cur_part.append({"val": symbol + cur_element})
+            rest, special = _read_until(it, lambda s: s in SPECIAL or s is EOF)
+            cur_part.append({'val': symbol + rest})
             symbol, prev = special, symbol
+            if symbol is EOF:
+                break
 
         if symbol == span_start:
             cur_part = []
-            # is_span_open = True
             queue.append(cur_part)
         elif symbol == span_end:
-            # print("span_end before append", symbol, prev, cur_part, parts, queue, sep="\n  ")
-            # parts.append({"type": "maybe_span", "parts": queue.pop()})
-            cur_result = {"type": "maybe_span", "val": queue.pop()}
-            # is_span_open = False
+            result = {'type': 'maybe_span', 'val': queue.pop()}
             cur_part = queue[-1]
-            cur_part.append(cur_result)
-            # print("span_end after append and cur_part", symbol, prev, cur_part, parts, queue, sep="\n  ")
-        # elif symbol in variants_seps:
-        #     is_cur_result_type_span = len(queue[-1]) > 1
-            
-        #     cur_result = {"val": queue.pop()}
-        #     if is_cur_result_type_span:
-        #         cur_result["type"] = "maybe_span"
-            
-            
-        elif symbol is EOF:
-            # print("EOF", symbol, prev, cur_part, parts, queue, sep="\n  ")
-            break
+            cur_part.append(result)
 
     return parts
 
 
-def find_alternatives(
-    val: str, variants_seps: T.Tuple[str, ...] = VARIANTS_SEPS
-) -> T.Optional[T.List[str]]:
-    for sep in variants_seps:
-        if sep in val:
-            return val.split(sep)
-    return None
-
-
 def flatten_span(
-    span_token_values: List[Dict[str, Any]], depth=1, order=0
-) -> List[Dict[str, Union[str, int]]]:
-    flattened_token_list = []
+    tokens: T.List[T.Dict], depth: int = 1, order: int = 0
+) -> T.List[T.Dict]:
+    """Flatten a span token list into FormulaElement-shaped dicts."""
+    flat: T.List[T.Dict] = []
 
-    if len(span_token_values) == 1:
-        tok_desc = {"value": span_token_values[0]["val"], "is_optional": True}
-        if depth > 1:
-            tok_desc["depth"] = depth - 1
-        return [tok_desc]
-    
-    for tok in span_token_values:
-        if tok.get("type") == "maybe_span":
-            flattened_token_list.extend(flatten_span(tok["val"], depth=depth + 1))
+    if len(tokens) == 1:
+        return [{'value': tokens[0]['val'], 'is_optional': True, 'depth': depth - 1}]
+
+    for tok in tokens:
+        if tok.get('type') == 'maybe_span':
+            flat.extend(flatten_span(tok['val'], depth=depth + 1))
         else:
-            flattened_token_list.append({"value": tok["val"], "depth": depth,
-                                         "is_optional": False})
+            flat.append({'value': tok['val'], 'depth': depth, 'is_optional': False})
 
-    return flattened_token_list
+    return flat
 
 
-def parse_formula(
-    formula: str, el_variants_sep="/",
-) -> List[Dict]:
-    elements = []
+def parse_formula(formula: str) -> T.List[T.Dict]:
+    """Return a list of element dicts ready to be stored as FormulaElement rows."""
+    elements: T.List[T.Dict] = []
     order = 0
 
-    tokens = tokenize_formula(formula)
-    for token in tokens:
-        if token.get("type") == "maybe_span":
-            span_elements = flatten_span(token["val"])
-
-            for _order, span_element in enumerate(span_elements, order):
-                span_element["order"] = _order
-            order = _order + 1
-
-            elements.extend(span_elements)
+    for tok in tokenize_formula(formula):
+        if tok.get('type') == 'maybe_span':
+            span_els = flatten_span(tok['val'])
+            for i, el in enumerate(span_els):
+                el['order'] = order + i
+            order += len(span_els)
+            elements.extend(span_els)
         else:
-            elements.append({"value": token["val"], "order": order})
+            elements.append({'value': tok['val'], 'order': order})
             order += 1
 
     return elements
 
 
-# TODO: special processing for NP (=NP-nom) ?
-def parse_formula_old(
-        formula: str,
-        el_variants_sep="/",
-) -> List[Dict]:
-    data = []
-
-    # TODO: improve tokenization to take spans into account
-    for i, element in enumerate(formula.split(" ")):
-        self_result_elements = []
-
-        has_brackets = any(br in element for br in ("(", ")"))
-        if has_brackets:
-            element = element.strip("()")
-
-        has_variants = el_variants_sep in element
-        if has_variants:
-            actual_elements = element.split(el_variants_sep)
-            first_element_data = {
-                "value": actual_elements[0], "order": i,
-                "is_optional": has_brackets, "has_variants": has_variants
-            }
-            self_result_elements.append(first_element_data)
-            self_result_elements.extend([
-                {"value": variant_el, "order": i, "is_optional": has_brackets}
-                for variant_el in actual_elements[1:]
-            ])
-        else:
-            self_result_elements = [
-                {"value": element, "order": i, "is_optional": has_brackets}]
-
-        # TODO: special parsing / saving of nom nps (simply `n` / `np`)
-
-        data.extend(self_result_elements)
-
-    return data
-
-
-def fix_construction_id(
-    construction_id: str, variant_sep="-",
-    corrections=str.maketrans({".": "0", "?": "9", " ": None})
-):
-    logger.debug(f"constr id: {construction_id}, type is {type(construction_id)}")
-    if isinstance(construction_id, (int, float)):
-        return int(construction_id)
-
-    if variant_sep in construction_id:
-        main_id_part, variant_id, *extra = construction_id.split(variant_sep)
-        if extra:
-            raise ValueError(f"construction id: extra variant_sep in `{main_id_part}`")
-    else:
-        main_id_part, variant_id = construction_id, ""
-
-    variants_met = CONSTRUCTION_ID2VARIANTS_MET
-
-    # variant_id, prev_variant_id = len(variants_met), variant_id
-    # variants_met.append(variant_id)
-    # logger.debug(f"previous variant_id:  {prev_variant_id}, new: {variant_id}")
-
-
-    main_id_part = main_id_part.translate(corrections)
-    logger.debug(f"old: {construction_id}, new main part: {main_id_part}")
-
-    if "(" in main_id_part and ")" in main_id_part:
-        num = main_id_part[:main_id_part.index("(")]
-        group = main_id_part[main_id_part.index("(")+1:main_id_part.index(")")]
-
-        return int(group + num + str(variant_id))
-
-    else:
-        print(main_id_part)
-        raise ValueError
-    
-
-
-def fix_construction_id_wrapper(phrase_dict, id_key="construction_id"):
-    orig_id = phrase_dict[id_key]
-    maybe_id = fix_construction_id(phrase_dict[id_key])
-    print("constr ids:", orig_id, maybe_id)
-    if str(orig_id) == str(maybe_id):
-        maybe_id = int(str(maybe_id) + phrase_dict.get("group_number", "000"))
-    phrase_dict[id_key] == maybe_id
-
-
-id_to_change_object = {}
-
-
-class ChangesManager:
-    def __init__(self) -> None:
-        self.ids_construction2changes: T.Dict[int, T.List[int]] = {}
-
-    def add_construction(self, id_: int, obj: Construction):
-        self.ids_construction2changes.setdefault(id_, [])
-    
-    def add_change(self, id_: int, construction_id: int):
-        self.ids_construction2changes.setdefault(construction_id, []).append(id_)
-
-
-
-def fix_values(
-    phrase_dict: Dict[str, Union[str, int, None]],
-    model_class: Type[Union[Construction, GeneralInfo, Change, Constraint]]
-):
-    logger.debug(f"fixing values: {phrase_dict}, model: {model_class}")
-    if model_class is Construction:
-        phrase_dict["orig_id"] = phrase_dict["id"]
-        # fix_construction_id_wrapper(phrase_dict, id_key="id")
-        phrase_dict["id"] = fix_construction_id(phrase_dict["id"])
-    elif "construction_id" in phrase_dict:
-        phrase_dict["construction_id"] = fix_construction_id(phrase_dict["construction_id"])
-
-    if model_class is Change:
-        former_change = phrase_dict.pop("former_change")
-        if former_change:
-            if not isinstance(former_change, int):
-                previous_changes_ids = [int(_id.strip()) for _id in former_change.split(",")]
-            else:
-                previous_changes_ids = [former_change]
-            for _id in previous_changes_ids:
-                obj = id_to_change_object.get(_id)
-                if obj:
-                    phrase_dict.setdefault("previous_changes", []).append(obj)
-                else:
-                    raise ValueError(f"no change defined: {_id} (from {phrase_dict['id']})")
-        else:
-            phrase_dict["previous_changes"] = []
-
-    return phrase_dict
-
-
-def get_formula_element_variants(variation_val: str) -> Dict[str, List[str]]:
-    elem2variants = {}
-
-    for single_variation_desc in variation_val.split("\n"):
-        if not (":" in single_variation_desc and "," in single_variation_desc):
-            continue
-        if (":" in single_variation_desc) ^ ("," in single_variation_desc):
-            # there may be error in markup
-            continue
-
-        described_formula_el, el_variants_str = single_variation_desc.split(":")
-        el_variants = [el_var.strip() for el_var in el_variants_str.split(",")]
-
-        elem2variants[described_formula_el] = el_variants
-
-    return elem2variants
-
-
-def to_formula(
-    formula_s: str, element_model = FormulaElement,
-    formula_parser: Callable[[str], List[Dict[str, str]]]=parse_formula
-) -> None:
-    formula_elements = formula_parser(formula_s)
-    formula_elements_vals = [element_model(**el_data)
-                             for el_data in formula_elements]
-    return formula_elements_vals
-
-
-MORPHOSYNTAX_TAG_KEY = "morphosyntags"
-MORPHOSYNTAX_TAG_FINAL_KEY = "morphosyntax_tags"
-SEMANTICS_TAG_KEY = "semantags"
-SEMANTICS_FINAL_TAG_KEY = "semantic_tags"
-FINAL_KEYS = {
-    MORPHOSYNTAX_TAG_KEY: MORPHOSYNTAX_TAG_FINAL_KEY,
-    SEMANTICS_TAG_KEY: SEMANTICS_FINAL_TAG_KEY,
-}
-
-TagRegistry: T.Dict[T.Tuple[str, str], GeneralTag] = {}
-
-
-def parse_tags(
-    phrase_dict: Dict[str, Union[str, int]],
-    morphosyntax_tag_key: str=MORPHOSYNTAX_TAG_KEY,
-    semantics_tag_key: str=SEMANTICS_TAG_KEY,
-) -> Dict[str, T.Optional[T.List[str]]]:
-    result = {}
-    for key in [morphosyntax_tag_key, semantics_tag_key]:
-        kind = SEMANTICS_TAG if key == semantics_tag_key else MORPHOSYNTAX_TAG
-        if key in phrase_dict:
-            tags = []
-            for t in (phrase_dict[key] or "").split(","):
-                if t:
-                    name = t.strip().strip("''")
-                    tag_id = (name, kind)
-                    if tag_id in TagRegistry:
-                        tag = TagRegistry[tag_id]
-                    else:
-                        tag = GeneralTag(name=t.strip(), kind=kind)
-                        TagRegistry[tag_id] = tag
-
-                    tags.append(tag)
-
-            result[key] = tags
-
-    return result
-
-
-def process_construction(
-    phrase_dict: Dict[str, Union[str, int]], constr: Construction,
-    formula_parser: Callable[[str], List[Dict[str, str]]] = parse_formula,
-    verbose=False
-) -> None:
-    """Parse and add to construction object variants and their formula elements
-
-    :param phrase_dict:
-    :param constr:
-    :param formula_parser:
-    :param verbose:
-    :return:
-    """
-
-    synt_function = phrase_dict.get("synt_function_of_anchor")
-    logger.debug(f"function is: {synt_function}")
-    if synt_function not in SYNT_FUNCTION_OF_ANCHOR_VALUES:
-        if synt_function is None:
-            first_synt_function = UNKNOWN_SYNT_FUNCTION_OF_ANCHOR
-        else:
-            first_synt_function = synt_function.split()[0]
-            if first_synt_function not in SYNT_FUNCTION_OF_ANCHOR_VALUES:
-                first_synt_function = UNKNOWN_SYNT_FUNCTION_OF_ANCHOR
-        phrase_dict["synt_function_of_anchor"] = first_synt_function
-        constr.synt_function_of_anchor = first_synt_function
-        logger.debug(f"final function is: {first_synt_function}")
-
-        # name2tags = parse_tags(phrase_dict)
-        # for key in (MORPHOSYNTAX_TAG_KEY, SEMANTICS_TAG_KEY):
-        #     value = []
-        #     if key in name2tags:
-        #         value = name2tags[key]
-
-        #     print(value)
-            
-        #     getattr(constr, FINAL_KEYS[key], []).extend(value)
-
-    formula_elements = formula_parser(phrase_dict["formula"])
-    formula_elements_vals = [FormulaElement(**el_data)
-                             for el_data in formula_elements]
-    if verbose:
-        print(FormulaElement, formula_elements_vals)
-
-    constr.formula_elements.extend(formula_elements_vals)
-
-    main_constr = ConstructionVariant(is_main=True)
-    main_constr.formula_elements.extend(formula_elements_vals)
-    construction_variants_vals = [main_constr]
-
-    construction_variants = [
-        var for var in (phrase_dict["variation"] or "").split("\n")
-        if var and not any(symb in var for symb in ":,")
-    ]
-    print(construction_variants)
-
-    for variant in construction_variants:
-        constr_variant = ConstructionVariant(formula=variant)
-        variant_formula_elements = formula_parser(variant)
-        variant_formula_elements_vals = [FormulaElement(**el_data)
-                                         for el_data in variant_formula_elements]
-        constr_variant.formula_elements.extend(variant_formula_elements_vals)
-        construction_variants_vals.append(constr_variant)
-
-    if verbose:
-        print(ConstructionVariant, construction_variants_vals)
-
-    constr.variants.extend(construction_variants_vals)
-
-
-def process_change(
-    phrase_dict: Dict[str, Union[str, int]], change: Change,
-    formula_parser: Callable[[str], List[Dict[str, str]]] = parse_formula,
-    year_sep_re = re.compile(r"-‐–—‒―−"),
-    verbose=False
-) -> None:
-    """Parse stage formula and add it to construction variants"""
-    main_stage_variant = ConstructionVariant(
-        construction_id=change.construction_id, is_main=True
-    )
-
-    # fix inconsistent year separators
-    for year_type in ("first_attested", "last_attested"):
-        year = phrase_dict[year_type]
-        if isinstance(year, str):
-            phrase_dict[year_type] = year_sep_re.sub("-", year)
-
-    stage = phrase_dict["stage"]
-    main_stage_variant.formula = stage
-    if stage not in {"entire_construction"}:
-        elements = to_formula(stage)
-        main_stage_variant.formula_elements = elements
-
-    change.variants.append(main_stage_variant)
-
-    name2tags = parse_tags(phrase_dict)
-    for key in (MORPHOSYNTAX_TAG_KEY, SEMANTICS_TAG_KEY):
-        value = []
-        if key in name2tags:
-            value = name2tags[key]
-
-        print(value)
-        
-        getattr(change, FINAL_KEYS[key], []).extend(value)
-
-
-# def process_general_info(
-#     phrase_dict: Dict[str, Union[str, int]], general_info: GeneralInfo,
-# )
-
-
-extra_processing = {
-    Construction: process_construction,
-    Change: process_change,
-    # GeneralInfo: process_general_info,
-}
-
-
-RowDict = T.Dict[str, T.Any]
-
-
-def not_empty(collection: T.Iterable):
-    return bool(collection)
-
-def make_has_dict_keys(keys: T.List[str]) -> T.Callable[[RowDict], bool]:
-    def has_dict_keys(d: RowDict) -> str:
-        return all(key in d for key in keys)
-    return has_dict_keys
-
-class BaseInputTable(abc.ABC):
-    MUST_HAVE_COLS = []
-    row_filters = [not_empty]
-
-    def __init__(self) -> None:
-        self.row_filters = self.row_filters + [
-            make_has_dict_keys(self.MUST_HAVE_COLS)
-        ]
-
-    def is_row_okay(self, row: RowDict) -> bool:
-        return all(filt(row) for filt in self.row_filters)
-    
-    def process_row(self, row: RowDict) -> RowDict:
-        return row
-
-
-class ConstructionInputTable(BaseInputTable):
-    MUST_HAVE_COLS = []
-
-
-
-def convert_column_title(orig_title: str) -> str:
-    return orig_title.replace(" ", "_").lower()
-
-
-def get_sheets(
-    wb: openpyxl.Workbook, final_names: T.Iterable[str]=tuple(SHEET_TO_CLASS),
-    names_to_final_mapper: T.Optional[T.Dict[str, str]] = None
-) -> T.Dict[str, openpyxl.worksheet.worksheet.Worksheet]:
-    name_to_sheet = {}
-    if names_to_final_mapper:
-        for sheet in wb.worksheets:
-            title = names_to_final_mapper.get(sheet.title)
-            if title:
-                name_to_sheet[title] = sheet
-            else:
-                continue
-    else:
-        for sheet in wb.worksheets:
-            title = sheet.title
-            name_to_sheet[title] = sheet
-
-    return name_to_sheet
-
-
-def parse(filename: str, use_old_sheet_names=False, verbose=False):
-    wb = load_workbook(filename, data_only=True)
-
-    # parse.idscorrection = {}
-
-    data = []
-    print(wb.worksheets)
-
-    if not use_old_sheet_names:
-        name_to_sheet = get_sheets(wb, names_to_final_mapper=ORIG_SHEET_NAME2DB_TABLE_NAME)
-    else:
-        name_to_sheet = get_sheets(wb)
-    print(name_to_sheet)
-
-    for sheet_name, sheet in name_to_sheet.items():
-        model_class = SHEET_TO_CLASS.get(sheet_name)
-        if model_class is None:
-            continue
-
-        rows_iter = sheet.iter_rows()
-
-        # TODO: formula versus value
-        title_row = next(rows_iter)
-        title_row_values = [convert_column_title(cell.value)
-                            for cell in title_row if cell.value]
-        this_sheet_corrections = SHEET2COLUMN2CORRECTION.get(sheet_name, {})
-        logger.debug(f"this sheet corrections: {this_sheet_corrections}")
-
-        title_row_values = [
-            this_sheet_corrections.get(value, value)
-            for value in title_row_values
-        ]
-        print("title is", sheet.title, model_class, sheet_name,
-              this_sheet_corrections.get("change_id"),
-              title_row_values)
-
-        for row in rows_iter:
-            cell_values = [cell.value.strip() if isinstance(cell.value, str) else cell.value
-                           for cell in row]
-            if not any(cell_values):
-                continue
-
-            phrase_dict = dict(zip(title_row_values, cell_values))
-            # print(phrase_dict)
-
-            discard_row = False
-            for col in SHEET2MUSTHAVE_COLUMNS.get(sheet_name, ()):
-                if not phrase_dict.get(col):
-                    discard_row = True
-                    break
-
-            if model_class is Construction:
-                id_ = phrase_dict["id"]
-                if id_ in CONSTRUCTION_ID2VARIANTS_MET:
-                    discard_row = True
-                else:
-                    CONSTRUCTION_ID2VARIANTS_MET[id_] = True
-
-            if model_class is GeneralInfo:
-                id_ = phrase_dict["construction_id"]
-                if id_ in CONSTRUCTION_ID2GENERAL_INFO_MET:
-                    discard_row = True
-                else:
-                    CONSTRUCTION_ID2GENERAL_INFO_MET[id_] = True
-
-            if discard_row:
-                continue
-
+# ---------------------------------------------------------------------------
+# Year / date helpers
+# ---------------------------------------------------------------------------
+
+def _parse_year_str(raw: T.Any, left_bias: float = 0.5) -> T.Optional[int]:
+    """Return an integer year from a cell value.  Returns None if unparseable."""
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return None
+    s = str(raw).strip()
+    if not s or s == '-':
+        return None
+    if s.isnumeric():
+        return int(s)
+    if '-' in s:
+        if s.endswith('-ые'):
+            return int(s.split('-')[0])
+        parts = s.split('-')
+        if len(parts) == 2:
             try:
-                fix_values(phrase_dict, model_class)
-
-                if verbose:
-                    print(model_class, phrase_dict)
-                logger.debug(f"about to add to `{model_class}` this: {phrase_dict}")
-
-                values = model_class(**phrase_dict)
-                if model_class is Change:
-                    id_ = phrase_dict["id"]
-                    if not id_ in id_to_change_object:
-                        id_to_change_object[id_] = values
-                    else:
-                        raise ValueError(f"repeating change_id: {id_}")
-
-                if model_class in extra_processing:
-                    extra_processing[model_class](phrase_dict, values, verbose=verbose)
-
-                data.append(values)
-            
-            except (ValueError, AttributeError, TypeError) as e:
-                logger.warning(f"couldn't add {phrase_dict}: {traceback.print_exc()}")
-
-    if verbose:
-        for item in data:
-            if isinstance(item, Construction):
-                print(item, end="\n")
-
-    return data
+                lo, hi = int(parts[0]), int(parts[1])
+                return int(lo + (hi - lo) * left_bias)
+            except ValueError:
+                pass
+    return None
 
 
-if __name__ == "__main__":
-    from ..database_utils import init_db, make_database
+def _clean_str(val: T.Any) -> T.Optional[str]:
+    """Return a stripped string or None for empty/NaN/dash values."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    s = str(val).strip()
+    return None if s in ('', '-', 'NaN') else s
 
-    parser = argparse.ArgumentParser(
-        description="Append data from a suitable .xlsx (.README) to"
-                    "an (existing) database that is configured for this app")
 
-    parser.add_argument("file", metavar="F", type=str,
-                        help="an existing database file path")
-    parser.add_argument("--database-url", type=str, default=None,
-                        help="an optional sqlalchemy uri to use a different database")
-    # parser.add_argument("--database-name", type=str, default=None,
-    #                     help="an optional name for the database with same scheme")
-    parser.add_argument("-d", "--old", action="store_true",
-                        help="use olD sheet names")
-    parser.add_argument("-i", "--init", action="store_true",
-                        help="whether to initialize user database")
-    parser.add_argument("-v", "--verbose", action="store_true",
-                        help="whether to print values as they are processed")
-    parser.add_argument("-q", "--sql-quiet", action="store_true",
-                        help="whether to silence SQL console logging")
-    args = parser.parse_args()
+def _clean_bool(val: T.Any) -> T.Optional[bool]:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val)
+    s = str(val).strip().lower()
+    if s in ('1', 'yes', 'true', 'да'):
+        return True
+    if s in ('0', 'no', 'false', 'нет'):
+        return False
+    return None
 
-    kwargs = (dict(sqlalchemy_echo=False, sqlalchemy_echo_pool=False)
-              if args.sql_quiet else {})
 
-    if args.database_url is None:
-        from ..database import engine, db_session, Base
-    else:
-        engine, db_session, Base = make_database(args.database_url, **kwargs)
+def _clean_int(val: T.Any) -> T.Optional[int]:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    try:
+        return int(float(str(val).strip()))
+    except (ValueError, TypeError):
+        return None
 
-    if args.init:
+
+def _parse_former_change(raw: T.Any) -> T.List[int]:
+    """Parse former_change cell → list of Excel change_id integers."""
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return []
+    s = str(raw).strip()
+    if not s or s == '-':
+        return []
+    ids: T.List[int] = []
+    for part in re.split(r'[,\s]+', s):
+        part = part.strip()
+        if part.isnumeric():
+            ids.append(int(part))
+    return ids
+
+
+# ---------------------------------------------------------------------------
+# Main importer class
+# ---------------------------------------------------------------------------
+
+class DiachroniconImporter:
+    """Reads the Excel workbook and writes to the Diachronicon database."""
+
+    def __init__(
+        self,
+        excel_path: str | Path,
+        db_session,
+        clear: bool = False,
+        dry_run: bool = False,
+        verbose: bool = False,
+    ):
+        self.excel_path = Path(excel_path)
+        self.session = db_session
+        self.clear = clear
+        self.dry_run = dry_run
+        self.verbose = verbose
+
+        self._stats: T.Dict[str, int] = defaultdict(int)
+        # Map:  orig_id (str) → Construction.id  (set after DB flush)
+        self._orig_id_to_db_id: T.Dict[str, int] = {}
+        # Map:  excel_change_id (int) → Change.id  (set after DB flush)
+        self._excel_change_id_to_db_id: T.Dict[int, int] = {}
+
+    # ------------------------------------------------------------------ #
+    # Entry point
+    # ------------------------------------------------------------------ #
+
+    def run(self) -> None:
+        logger.info(f"Loading workbook: {self.excel_path}")
+        xl = pd.read_excel(str(self.excel_path), sheet_name=None, dtype=str)
+
+        df_cnstruct = self._load_cnstruct(xl)
+        df_gen_inf = self._load_gen_inf(xl)
+        df_ch = self._load_ch(xl)
+
+        if self.dry_run:
+            logger.info("Dry-run mode: validation only, no DB writes.")
+            self._validate(df_cnstruct, df_gen_inf, df_ch)
+            return
+
+        if self.clear:
+            self._clear_tables()
+
+        self._import_constructions(df_cnstruct, df_gen_inf)
+        self._import_changes(df_ch)
+        self._resolve_change_graph(df_ch)
+
+        logger.info(
+            "Import complete.  Stats: %s",
+            {k: v for k, v in sorted(self._stats.items())},
+        )
+
+    # ------------------------------------------------------------------ #
+    # Sheet loaders
+    # ------------------------------------------------------------------ #
+
+    def _load_cnstruct(self, xl: T.Dict[str, pd.DataFrame]) -> pd.DataFrame:
+        df = xl['cnstruct'].copy()
+        df.columns = [c.strip().lower() for c in df.columns]
+        df.rename(columns=CNSTRUCT_RENAME, inplace=True)
+        df['orig_id'] = df['orig_id'].apply(lambda x: _clean_str(x) or '')
+        return df
+
+    def _load_gen_inf(self, xl: T.Dict[str, pd.DataFrame]) -> pd.DataFrame:
+        df = xl['gen_inf'].copy()
+        # Drop the pivot-table summary columns that appear to the right
+        df = df[[c for c in df.columns if not str(c).startswith('Unnamed:')]]
+        df.columns = [c.strip().lower() for c in df.columns]
+        df.rename(columns=GEN_INF_RENAME, inplace=True)
+        df['construction_id'] = df['construction_id'].apply(_clean_int)
+        df = df[df['construction_id'].notna()].copy()
+        df['construction_id'] = df['construction_id'].astype(int)
+        return df
+
+    def _load_ch(self, xl: T.Dict[str, pd.DataFrame]) -> pd.DataFrame:
+        df = xl['ch'].copy()
+        df.columns = [c.strip().lower() for c in df.columns]
+        df.rename(columns=CH_RENAME, inplace=True)
+        df['construction_id'] = df['construction_id'].apply(_clean_int)
+        df['change_id'] = df['change_id'].apply(_clean_int)
+        df = df[df['construction_id'].notna() & df['change_id'].notna()].copy()
+        df['construction_id'] = df['construction_id'].astype(int)
+        df['change_id'] = df['change_id'].astype(int)
+        return df
+
+    # ------------------------------------------------------------------ #
+    # Validation (dry-run)
+    # ------------------------------------------------------------------ #
+
+    def _validate(
+        self,
+        df_cnstruct: pd.DataFrame,
+        df_gen_inf: pd.DataFrame,
+        df_ch: pd.DataFrame,
+    ) -> None:
+        logger.info(f"  cnstruct rows:   {len(df_cnstruct)}")
+        logger.info(f"  gen_inf rows:    {len(df_gen_inf)}")
+        logger.info(f"  changes rows:    {len(df_ch)}")
+
+        gen_ids = set(df_gen_inf['construction_id'])
+        ch_ids = set(df_ch['construction_id'])
+        overlap = gen_ids & ch_ids
+        logger.info(
+            f"  gen_inf ∩ ch:    {len(overlap)} constructions have both metadata and changes"
+        )
+        missing_ch = gen_ids - ch_ids
+        if missing_ch:
+            logger.warning(f"  Constructions in gen_inf with no changes: {missing_ch}")
+
+    # ------------------------------------------------------------------ #
+    # Database wipe
+    # ------------------------------------------------------------------ #
+
+    def _clear_tables(self) -> None:
+        from app.models import (
+            Change, Construction, ConstructionVariant, Constraint,
+            FormulaElement, GeneralInfo, ConstructionEmbedding, AnnotationDraft,
+            change_to_previous_changes, construction_to_tags, change_to_tags,
+        )
+        logger.info("Clearing existing data…")
+        # Order matters: child tables before parent tables
+        for tbl in (
+            change_to_previous_changes,
+            change_to_tags,
+            construction_to_tags,
+        ):
+            self.session.execute(tbl.delete())
+        for model in (
+            AnnotationDraft, ConstructionEmbedding,
+            Constraint, FormulaElement, ConstructionVariant,
+            Change, GeneralInfo,
+        ):
+            self.session.query(model).delete()
+        self.session.query(Construction).delete()
+        self.session.commit()
+        logger.info("Tables cleared.")
+
+    # ------------------------------------------------------------------ #
+    # Construction import
+    # ------------------------------------------------------------------ #
+
+    def _import_constructions(
+        self,
+        df_cnstruct: pd.DataFrame,
+        df_gen_inf: pd.DataFrame,
+    ) -> None:
+        from app.models import Construction, GeneralInfo, FormulaElement
+
+        # Build gen_inf lookup keyed by integer construction_id
+        gen_inf_by_int_id: T.Dict[int, T.Dict] = {}
+        for _, row in df_gen_inf.iterrows():
+            int_id = int(row['construction_id'])
+            gen_inf_by_int_id[int_id] = row.to_dict()
+
+        # Build set of integer IDs that have changes (to set is_published correctly)
+        # (populated later; for now all constructions start as draft)
+
+        logger.info(f"Importing {len(df_cnstruct)} constructions…")
+
+        for _, row in df_cnstruct.iterrows():
+            orig_id_raw = _clean_str(row.get('orig_id', '')) or ''
+
+            # Try to extract the base integer ID from values like '1', '1(221)', '1(19?)'
+            base_int_id = _extract_base_int(orig_id_raw)
+
+            # Resolve visibility: published if gen_inf.status == 'ready'
+            gen_row = gen_inf_by_int_id.get(base_int_id, {}) if base_int_id else {}
+            gen_status = _clean_str(gen_row.get('status', ''))
+            is_ready = gen_status == 'ready'
+
+            formula_str = _clean_str(row.get('formula', ''))
+            if not formula_str:
+                self._stats['skipped_no_formula'] += 1
+                continue
+
+            constr = self._get_or_create_construction(orig_id_raw)
+
+            constr.formula = formula_str
+            constr.contemporary_meaning = _clean_str(row.get('contemporary_meaning'))
+            constr.variation = _clean_str(row.get('variation'))
+            constr.in_rus_constructicon = _clean_bool(row.get('in_rus_constructicon'))
+            constr.rus_constructicon_id = _clean_int(row.get('rus_constructicon_id'))
+            constr.synt_function_of_anchor = _clean_str(
+                row.get('synt_function_of_anchor')
+            )
+            constr.anchor_schema = _clean_str(row.get('anchor_schema'))
+            constr.anchor_ru = _clean_str(row.get('anchor_ru'))
+            constr.anchor_eng = _clean_str(row.get('anchor_eng'))
+
+            # Visibility: ready constructions are published and not draft
+            constr.is_published = is_ready
+            constr.is_draft = not is_ready
+
+            # Attach GeneralInfo for constructions that have a matching gen_inf row
+            if gen_row and base_int_id:
+                if constr.general_info is None:
+                    constr.general_info = GeneralInfo(construction=constr)
+                gi = constr.general_info
+                gi.name = _clean_str(gen_row.get('name'))
+                gi.group_number = _clean_str(gen_row.get('group_number'))
+                gi.annotated_sample = _clean_str(gen_row.get('annotated_sample'))
+                gi.term_paper = _clean_str(gen_row.get('term_paper'))
+                gi.status = gen_status
+
+            # Formula elements — rebuild for this construction
+            constr.formula_elements = []
+            for el_dict in parse_formula(formula_str):
+                fe = FormulaElement(
+                    value=el_dict.get('value'),
+                    order=el_dict.get('order', 0),
+                    depth=el_dict.get('depth', 0),
+                    is_optional=el_dict.get('is_optional', False),
+                    has_variants='/' in (el_dict.get('value') or ''),
+                )
+                constr.formula_elements.append(fe)
+
+            self.session.add(constr)
+            self._stats['constructions_upserted'] += 1
+
+            if self.verbose:
+                logger.debug(f"  Construction {orig_id_raw}: {formula_str[:60]}")
+
+        self.session.flush()
+
+        # Populate the orig_id → db_id map after flush (IDs are now assigned)
+        from app.models import Construction as _C
+        for c in self.session.query(_C).all():
+            if c.orig_id:
+                self._orig_id_to_db_id[c.orig_id] = c.id
+
+        self.session.commit()
+        logger.info(
+            f"  {self._stats['constructions_upserted']} constructions written."
+        )
+
+    def _get_or_create_construction(self, orig_id: str):
+        from app.models import Construction
+        existing = (
+            self.session.query(Construction)
+            .filter_by(orig_id=orig_id)
+            .first()
+        )
+        if existing:
+            return existing
+        c = Construction(orig_id=orig_id)
+        return c
+
+    # ------------------------------------------------------------------ #
+    # Change import
+    # ------------------------------------------------------------------ #
+
+    def _import_changes(self, df_ch: pd.DataFrame) -> None:
+        from app.models import Change, Construction
+
+        # Build reverse map: integer construction_id → DB Construction.id
+        # using orig_id (plain integer string)
+        int_to_db_constr_id: T.Dict[int, int] = {}
+        from app.models import Construction as _C
+        for c in self.session.query(_C).all():
+            base = _extract_base_int(c.orig_id or '')
+            if base and base not in int_to_db_constr_id:
+                int_to_db_constr_id[base] = c.id
+
+        logger.info(f"Importing {len(df_ch)} changes…")
+
+        for _, row in df_ch.iterrows():
+            excel_cid = int(row['construction_id'])
+            excel_change_id = int(row['change_id'])
+
+            db_constr_id = int_to_db_constr_id.get(excel_cid)
+            if db_constr_id is None:
+                logger.warning(
+                    f"  Change {excel_change_id}: no Construction for "
+                    f"construction_id={excel_cid}, skipping."
+                )
+                self._stats['changes_skipped_no_construction'] += 1
+                continue
+
+            first_att_raw = _clean_str(row.get('first_attested'))
+            last_att_raw = _clean_str(row.get('last_attested'))
+
+            change = self._get_or_create_change(excel_change_id, db_constr_id)
+
+            change.construction_id = db_constr_id
+            change.stage = _clean_str(row.get('stage'))
+            change.former_change = _clean_str(row.get('former_change'))
+            change.level = _clean_str(row.get('level'))
+            change.type_of_change = _clean_str(row.get('type_of_change'))
+            change.subtype_of_change = _clean_str(row.get('subtype_of_change'))
+            change.comment = _clean_str(row.get('comment'))
+            change.first_attested = first_att_raw
+            change.last_attested = last_att_raw
+            change.first_attested_year = _parse_year_str(first_att_raw)
+            change.last_attested_year = _parse_year_str(last_att_raw)
+            change.first_example = _clean_str(row.get('first_example'))
+            change.last_example = _clean_str(row.get('last_example'))
+            change.frequency_trend = _clean_str(row.get('frequency_trend'))
+            change.sources = _clean_str(row.get('sources'))
+
+            self.session.add(change)
+            self._stats['changes_upserted'] += 1
+
+        self.session.flush()
+
+        # Populate excel_change_id → DB id map
+        # We stored the excel change_id temporarily in Change.former_change metadata;
+        # instead, query by construction_id + stage to rebuild the map robustly.
+        # Simpler: iterate the dataframe again now that all rows are flushed.
+        from app.models import Change as _Ch
+        # Build a (construction_id_excel, excel_change_id) → DB change map
+        # by reading back all changes and correlating via construction
+        self._excel_change_id_to_db_id = {}
+        for _, row in df_ch.iterrows():
+            excel_cid = int(row['construction_id'])
+            excel_chid = int(row['change_id'])
+            db_constr_id = int_to_db_constr_id.get(excel_cid)
+            if db_constr_id is None:
+                continue
+            # Find the change we just wrote by matching stage + construction_id
+            stage = _clean_str(row.get('stage'))
+            level = _clean_str(row.get('level'))
+            hit = (
+                self.session.query(_Ch)
+                .filter_by(
+                    construction_id=db_constr_id,
+                    stage=stage,
+                    level=level,
+                )
+                .first()
+            )
+            if hit:
+                self._excel_change_id_to_db_id[excel_chid] = hit.id
+
+        self.session.commit()
+        logger.info(f"  {self._stats['changes_upserted']} changes written.")
+
+    def _get_or_create_change(self, excel_change_id: int, db_constr_id: int):
+        """Return an existing Change or a new unsaved one."""
+        from app.models import Change
+        # If we already resolved this excel id, look it up
+        db_id = self._excel_change_id_to_db_id.get(excel_change_id)
+        if db_id:
+            existing = self.session.query(Change).get(db_id)
+            if existing:
+                return existing
+        return Change()
+
+    # ------------------------------------------------------------------ #
+    # Change graph resolution  (former_change → previous_changes M2M)
+    # ------------------------------------------------------------------ #
+
+    def _resolve_change_graph(self, df_ch: pd.DataFrame) -> None:
+        from app.models import Change, change_to_previous_changes
+
+        # Clear existing graph edges to avoid duplicates on re-import
+        self.session.execute(change_to_previous_changes.delete())
+        self.session.flush()
+
+        resolved = 0
+        missing = 0
+
+        for _, row in df_ch.iterrows():
+            excel_chid = int(row['change_id'])
+            db_chid = self._excel_change_id_to_db_id.get(excel_chid)
+            if db_chid is None:
+                continue
+
+            change = self.session.query(Change).get(db_chid)
+            if change is None:
+                continue
+
+            prev_excel_ids = _parse_former_change(row.get('former_change'))
+            for prev_excel_id in prev_excel_ids:
+                prev_db_id = self._excel_change_id_to_db_id.get(prev_excel_id)
+                if prev_db_id is None:
+                    logger.warning(
+                        f"  former_change={prev_excel_id} referenced by "
+                        f"change {excel_chid} not found in DB."
+                    )
+                    missing += 1
+                    continue
+                prev_change = self.session.query(Change).get(prev_db_id)
+                if prev_change and prev_change not in change.previous_changes:
+                    change.previous_changes.append(prev_change)
+                    resolved += 1
+
+        self.session.commit()
+        logger.info(
+            f"  Change graph: {resolved} edges resolved, {missing} references unresolved."
+        )
+        self._stats['graph_edges_resolved'] = resolved
+        self._stats['graph_edges_unresolved'] = missing
+
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+
+def _extract_base_int(orig_id: str) -> T.Optional[int]:
+    """Extract the leading integer from IDs like '1', '1(221)', '10(202)'.
+
+    Returns None for IDs that don't start with an integer, e.g. '1(19?)'.
+    """
+    if not orig_id:
+        return None
+    m = re.match(r'^(\d+)', orig_id.strip())
+    if m:
+        return int(m.group(1))
+    return None
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+def _build_argparser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        description='Import the Diachronicon Excel workbook into the database.'
+    )
+    p.add_argument('--excel', required=True, help='Path to the .xlsx workbook')
+    p.add_argument(
+        '--clear',
+        action='store_true',
+        default=False,
+        help='Delete all existing constructions and changes before import',
+    )
+    p.add_argument(
+        '--dry-run',
+        action='store_true',
+        default=False,
+        help='Parse and validate only; do not write to the database',
+    )
+    p.add_argument(
+        '--verbose',
+        action='store_true',
+        default=False,
+        help='Print per-row progress',
+    )
+    return p
+
+
+def main() -> None:
+    args = _build_argparser().parse_args()
+
+    if args.verbose:
+        logger.setLevel(logging.DEBUG)
+
+    excel_path = Path(args.excel)
+    if not excel_path.exists():
+        logger.error(f"File not found: {excel_path}")
+        sys.exit(1)
+
+    # Bootstrap the database connection
+    from app.database_utils import get_default_database
+    from app.database_utils import init_db
+    from app.models import Base
+
+    engine, db_session = get_default_database()
+
+    if not args.dry_run:
+        # Ensure all tables exist before importing
         init_db(Base, engine)
 
-    data = parse(args.file, use_old_sheet_names=args.old, verbose=args.verbose)
-    print(len(data))
+    importer = DiachroniconImporter(
+        excel_path=excel_path,
+        db_session=db_session,
+        clear=args.clear,
+        dry_run=args.dry_run,
+        verbose=args.verbose,
+    )
 
-    # db_session.add_all(data)
-    for piece in data:
-        db_session.add(piece)
-        db_session.commit()
+    try:
+        importer.run()
+    except Exception:
+        traceback.print_exc()
+        if not args.dry_run:
+            db_session.rollback()
+        sys.exit(1)
+    finally:
+        db_session.remove()
 
-    # db_session.commit()
 
-    print(f"Commit made!")
+if __name__ == '__main__':
+    main()

@@ -30,7 +30,7 @@ import wtforms.validators
 from flask import current_app
 from flask import render_template, abort, request, redirect
 from flask_wtf import FlaskForm
-
+from app.models import SYNT_FUNCTION_OF_ANCHOR_VALUES
 from app.models import (
     Construction,
     Change,
@@ -71,7 +71,8 @@ _OPERATORS = {'le': le, 'ge': ge, 'eq': eq}
 #                   for col in Change.__table__.columns]
 
 MEANING_VALUES = []  # Construction.contemporary_meaning.unique()
-SYNT_FUNCTIONS_ANCHOR = Construction.synt_function_of_anchor.type.enums
+SYNT_FUNCTIONS_ANCHOR = [v for v in SYNT_FUNCTION_OF_ANCHOR_VALUES
+                         if v != "<unknown>"]
 TYPES_OF_CHANGE = []
 CONSTRUCTION_NAMES = []
 
@@ -709,8 +710,7 @@ class ConstructionForm(FlaskForm):
 
 class AnchorForm(FlaskForm):
     _synt_functions_datalist_id = "synt_function_of_anchor_values"
-    _synt_functions_anchor = safe_get(
-        lambda: Construction.synt_function_of_anchor.type.enums) or SYNT_FUNCTIONS_ANCHOR
+    _synt_functions_anchor = SYNT_FUNCTIONS_ANCHOR
     print(_synt_functions_anchor)
     _synt_functions_datalist = DataList(
         id=_synt_functions_datalist_id,
