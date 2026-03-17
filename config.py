@@ -8,36 +8,59 @@ class Config(object):
 
     SECRET_KEY = os.environ.get('SECRET_KEY') or 'constructicon-now-with-history-wow'
 
-    # DATABASE = os.path.join(app.instance_path, 'app.sqlite')
     SQLALCHEMY_DATABASE_URI_TEMPLATE = 'sqlite:///' + basedir + '{}'
-    SQLALCHEMY_DATABASE_URI = 'sqlite:///' + os.path.join(basedir, 'diachronicon.db')
-    # sqlalchemy_echo = os.environ.get('SQLA_ECHO')
-    # SQLALCHEMY_ECHO = bool(int(os.environ.get('SQLA_ECHO') or 0)) or 'debug'
+    SQLALCHEMY_DATABASE_URI = (
+        os.environ.get('DATABASE_URL')
+        or 'sqlite:///' + os.path.join(basedir, 'diachronicon.db')
+    )
     SQLALCHEMY_ECHO = os.environ.get('SQLALCHEMY_ECHO') == 'debug' or False
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     JINJA_OPTIONS = {
-        # "extensions": ["jinja2.ext.autoescape", "jinja2.ext.with_"],
-        # 'line_statement_prefix': '%',
-        'trim_blocks': True, 'lstrip_blocks': True
+        'trim_blocks': True,
+        'lstrip_blocks': True,
     }
     LOGGING_FILE = os.environ.get('FLASK_LOGGING_FILE') or 'logs/base.log'
 
+    # ------------------------------------------------------------------
+    # Semantic / vector search
+    # ------------------------------------------------------------------
+    # Model used to embed construction text fields.
+    # 'paraphrase-multilingual-mpnet-base-v2' handles Russian well.
+    EMBEDDING_MODEL = (
+        os.environ.get('EMBEDDING_MODEL')
+        or 'paraphrase-multilingual-mpnet-base-v2'
+    )
+
+    # ------------------------------------------------------------------
+    # LLM integrations (annotation tool)
+    # ------------------------------------------------------------------
+    OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+    ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY')
+
+    # Default models used when the annotator does not specify one
+    OPENAI_DEFAULT_MODEL = os.environ.get('OPENAI_DEFAULT_MODEL') or 'gpt-4o'
+    ANTHROPIC_DEFAULT_MODEL = (
+        os.environ.get('ANTHROPIC_DEFAULT_MODEL') or 'claude-sonnet-4-5-20251001'
+    )
+
 
 class TestConfig(Config):
-    TESTING=True
-
+    TESTING = True
     SQLALCHEMY_ECHO = False
     SQLALCHEMY_TRACK_MODIFICATIONS = False
-
     LOGGING_FILE = os.environ.get('FLASK_LOGGING_FILE') or 'logs/test.log'
+    # Use an in-memory database for tests
+    SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
 
 
 loggingConfig = {
     'version': 1,
-    'formatters': {'default': {
-        'format': '[%(asctime)s] %(levelname)s in %(module)s: %(message)s',
-    }},
+    'formatters': {
+        'default': {
+            'format': '[%(asctime)s] %(levelname)s in %(module)s: %(message)s',
+        }
+    },
     'handlers': {
         'wsgi': {
             'class': 'logging.StreamHandler',
@@ -45,17 +68,17 @@ loggingConfig = {
             'formatter': 'default',
         },
         'file': {
-         'class': 'logging.handlers.RotatingFileHandler',
-         'filename': Config.LOGGING_FILE,
-         'encoding': 'utf-8',
-         'maxBytes': 8*2**23,  # 8MB
-         'backupCount': 5,
-         'formatter': 'default',
-         'level': 'INFO'
-        }
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': Config.LOGGING_FILE,
+            'encoding': 'utf-8',
+            'maxBytes': 8 * 2 ** 23,   # 8 MB
+            'backupCount': 5,
+            'formatter': 'default',
+            'level': 'INFO',
+        },
     },
     'root': {
         'level': 'DEBUG',
-        'handlers': ['wsgi', 'file']
-    }
+        'handlers': ['wsgi', 'file'],
+    },
 }

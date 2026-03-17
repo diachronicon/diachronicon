@@ -258,7 +258,7 @@ class BootstrapSelectWidget:
         selected = getattr(field, "data") or kwargs.get("selected")
         options_html = join_newline_indent(
             [f"{base_indent}{render_option(value, Markup(label), value==selected)}"
-             for value, label, _ in field.iter_choices()]
+             for value, label, *_ in field.iter_choices()]
         )
         
         select_opening = f"<select {partial_order_html_params(attrs)}>"

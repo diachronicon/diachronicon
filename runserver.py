@@ -1,8 +1,8 @@
 from app import create_app
-from config import TestConfig
+from config import Config
 
 # app = create_app()
-app = create_app(test_config_obj=TestConfig)
+app = create_app()
 # print("about to run (runserver)")
 # app.run("0.0.0.0", 5000)
 
