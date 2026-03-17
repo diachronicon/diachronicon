@@ -6,7 +6,6 @@
     <title>{{ title }} — Диахроникон</title>
     <link rel="stylesheet" type="text/css" href="/static/content/bootstrap.min.css" />
     <link rel="stylesheet" type="text/css" href="/static/content/site.css" />
-    <!-- our project just needs Font Awesome Solid + Brands -->
     <link href="/static/fontawesome/_fontawesome.min.css" rel="stylesheet" />
     <link href="/static/fontawesome/css/solid.css" rel="stylesheet" />
     {% block head_links %}{% endblock %}
@@ -17,12 +16,10 @@
 </head>
 
 <body>
-    <nav class="navbar sticky-top navbar-expand-lg"
-         id="navbarWrapper"
-    >
+    <nav class="navbar sticky-top navbar-expand-lg" id="navbarWrapper">
         <div class="container">
             <a class="navbar-brand" href="/">
-                <img src="/static/logo/logo_circle.png", alt="Logo" width="60" height="60" class="d-inline-block">
+                <img src="/static/logo/logo_circle.png" alt="Logo" width="60" height="60" class="d-inline-block">
                 Диахроникон
             </a>
             <button class="navbar-toggler" type="button"
@@ -32,34 +29,79 @@
                 <span class="navbar-toggler-icon"></span>
             </button>
 
-            {# data-bs-toggle="collapse"
-              href="#{{ examples_id }}" role="button"
-              aria-expanded="false" aria-controls="#{{ examples_id }}" #}
-
             <div class="collapse navbar-collapse" id="navbar">
-                <ul class="navbar-nav mr-auto">
-                    <!--<li class="nav-item active">
-                        <a class="nav-link" href="/">Home <span class="sr-only">(current)</span></a>
-                    </li>-->
-                    {# <li class="nav-item">
-                        <a class="nav-link" href="{{ url_for('main.main') }}">Главная</a>
-                    </li> #}
-                    {# <li class="nav-item">
-                        <a class="nav-link" href="{{ url_for('search.simple_search') }}">
-                            Простой поиск</a>
-                    </li> #}
+                {# Left side — public navigation #}
+                <ul class="navbar-nav me-auto">
                     <li class="nav-item">
-                        <a class="nav-link" href="{{ url_for('search.search') }}">
-                            Поиск</a>
+                        <a class="nav-link" href="{{ url_for('search.search') }}">Поиск</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="{{ url_for('main.about') }}">
-                            О базе</a>
+                        <a class="nav-link" href="{{ url_for('main.about') }}">О базе</a>
                     </li>
+                </ul>
+
+                {# Right side — role-dependent #}
+                <ul class="navbar-nav ms-auto">
+                    {% if current_user.is_authenticated %}
+
+                        {% if current_user.role in ('annotator', 'admin') %}
+                            <li class="nav-item">
+                                <a class="nav-link" href="#">Аннотирование</a>
+                            </li>
+                        {% endif %}
+
+                        {% if current_user.role == 'admin' %}
+                            <li class="nav-item">
+                                <a class="nav-link" href="#">Админ</a>
+                            </li>
+                        {% endif %}
+
+                        <li class="nav-item dropdown">
+                            <a class="nav-link dropdown-toggle" href="#"
+                               id="userDropdown" role="button"
+                               data-bs-toggle="dropdown" aria-expanded="false">
+                                {{ current_user.username }}
+                            </a>
+                            <ul class="dropdown-menu dropdown-menu-end"
+                                aria-labelledby="userDropdown">
+                                <li>
+                                    <span class="dropdown-item-text text-muted small">
+                                        {{ current_user.role }}
+                                    </span>
+                                </li>
+                                <li><hr class="dropdown-divider"></li>
+                                <li>
+                                    <a class="dropdown-item" href="{{ url_for('auth.logout') }}">
+                                        Выйти
+                                    </a>
+                                </li>
+                            </ul>
+                        </li>
+
+                    {% else %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('auth.login') }}">Войти</a>
+                        </li>
+                    {% endif %}
                 </ul>
             </div>
         </div>
     </nav>
+
+    {# Flashed messages — shown on every page above content #}
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            <div class="container mt-2">
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close"
+                                data-bs-dismiss="alert" aria-label="Закрыть"></button>
+                    </div>
+                {% endfor %}
+            </div>
+        {% endif %}
+    {% endwith %}
 
     {% block before_content %}{% endblock %}
     <main>
@@ -74,7 +116,10 @@
         </div>
     </main>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>    <script src="/static/scripts/respond.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+            integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
+            crossorigin="anonymous"></script>
+    <script src="/static/scripts/respond.js"></script>
     <script src="/static/scripts/navbar.js"></script>
     {% block scripts %}{% endblock %}
 
