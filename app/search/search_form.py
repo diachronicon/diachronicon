@@ -400,37 +400,6 @@ class BootstrapIntegerField(wtforms.IntegerField):
     widget = BootstrapStringWidget(use_placeholder=True)
 
 
-def render_datalist():
-    datalist = DataList("order-options", with_attr_options= [
-        {"value": 1, "label": "первый", "selected": True},
-        {"value": -2, "label": "предпоследний"},
-        {"value": -1, "label": "последний"},
-    ])
-
-    print(datalist)
-
-    print(env.from_string("{{ datalist() }}",
-                          globals={"datalist": datalist}))
-    
-
-def render_text():
-    # field = wtforms.StringField(
-    #     label="Формула", description="тестовое описание", name="formula",
-    #     id="formula-1-", widget=BootstrapStringWidget
-    # )
-
-    class MyForm(wtforms.Form):
-        formula = wtforms.StringField(
-            label="Формула", description="тестовое описание", name="formula",
-            id="formula-1", widget=BootstrapStringWidget()
-        )
-
-    # print(field(cur_value="np*"))
-    form = MyForm()
-
-    print(form.formula())
-
-
 def render_fieldset():
     class MyForm(wtforms.Form):
         # general
@@ -508,79 +477,4 @@ def render_multifields():
     # print(myform.constructions())
 
     # print(render_template())
-
-def test_boolean():
-    class ConstructionAndGeneralForm(Form):
-        constructionId = BootstrapStringField(
-            label="id конструкции", name="constructionId",
-        )
-        formula = BootstrapStringField(
-            label="Формула", name="formula",
-        )
-
-        _meaning_datalist_id = "meaning_values"
-        # _meaning_values = safe_get(Construction.contemporary_meaning.unique) or MEANING_VALUES
-        # _meaning_values = ["вау",  "вцщк 2"]
-        _meaning_values = []
-        _meaning_datalist = DataList(
-                id=_meaning_datalist_id,
-                literal_options=_meaning_values)
-        meaning = BootstrapStringField(
-            label="Значение", name="meaning",
-            render_kw=dict(
-                # label_extra_text = Markup('<span class="symbol symbol-form symbol-logic"></span>'),
-                div_extra_contents = [_meaning_datalist],
-                list = _meaning_datalist_id,
-            ), description="значение конструкциии в последний период",   
-        )
-
-        in_rus_constructicon = BootstrapBooleanField(
-            label="Есть в конструктиконе", name="in_rus_constructicon"
-        )
-
-        _num_changes_sign_options, selected = make_sign_options_for_param("Количество")
-        num_changes_sign = BoostrapSelectField(
-            _num_changes_sign_options[0][1], name="num_changes_sign", 
-            choices=_num_changes_sign_options,
-            render_kw=dict(selected=selected))
-        num_changes = BootstrapStringField(
-            label="Количество изменений", name="num_changes",
-        )
-
-    form = ConstructionAndGeneralForm()
-    print(form.constructionId())
-    print(form.formula())
-    print(form.meaning())
-    print(form.in_rus_constructicon())
-    print(form.num_changes_sign())
-
-
-def test_anchor():
-    class AnchorForm(Form):
-        _synt_functions_datalist_id = "synt_function_of_anchor_values"
-        # _synt_functions_anchor = safe_get(
-        #     lambda: Construction.synt_function_of_anchor.type.enums) or SYNT_FUNCTIONS_ANCHOR
-        _synt_functions_anchor = ["фф", "алфт"]
-        _synt_functions_datalist = DataList(
-            id=_synt_functions_datalist_id,
-            literal_options=_synt_functions_anchor)
-        synt_functions_of_anchor = BootstrapStringField(
-            label="Синт. функция якоря", name="synt_function_of_anchor",
-            render_kw=dict(div_extra_contents = [_synt_functions_datalist],
-                        list=_synt_functions_datalist_id)
-        )
-
-        anchor_schema = BootstrapStringField(label="Схема якоря", name="anchor_schema")
-        anchor_ru = BootstrapStringField(label="Якорь (рус.)", name="anchor_ru")
-
-    form = AnchorForm()
-    print(form.synt_functions_of_anchor())
-    print(form.anchor_schema())
-    print(form.anchor_ru())
-
-# render_datalist()
-# render_text()
-# render_fieldset()
-# render_multifields()
-# test_boolean()
-test_anchor()
+    

@@ -8,7 +8,7 @@ from app.models import *
 
 # basedir = os.path.abspath(os.path.dirname(__file__))
 basedir = Path("./tmp/")
-SQLALCHEMY_TEST_DATABASE_URI = 'sqlite:///' + str(Path(basedir) / 'test_diachronicon.db').
+SQLALCHEMY_TEST_DATABASE_URI = 'sqlite:///' + str(Path(basedir) / 'test_diachronicon.db')
 
 
 @pytest.fixture

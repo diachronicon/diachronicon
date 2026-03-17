@@ -511,37 +511,3 @@ class BaseQuery(metaclass=QueryMeta):
 class Query(BaseQuery): ...
 
 _COMPARISON = Comparison.__name__
-
-
-form = {
-    'construction':
-        {'constructionId': '', 'formula': 'np*', 'meaning': 'minimizer',
-         'in_rus_constructicon': False, 'num_changes_sign': 'le', 'num_changes': 5,
-         'csrf_token': None},
-    'anchor': {'synt_functions_of_anchor': None, 'anchor_schema': '', 'anchor_ru': '',
-               'csrf_token': None},
-    'changes': [{'formula': '', 'stage_abs': None, 'level': '', 'type_of_change': '',
-                 'duration_sign': 'eq', 'duration': 5, 'first_attested': 1900, 
-                 'last_attested': None, 'csrf_token': None},
-                {'formula': 'vp*', 'stage_abs': None, 'level': '', 'type_of_change': '',
-                 'duration_sign': '', 'duration': None, 'first_attested': None,
-                 'last_attested': None, 'csrf_token': None},
-                {'formula': 'dp*', 'stage_abs': 2, 'level': '', 'type_of_change': '',
-                 'duration_sign': '', 'duration': None, 'first_attested': None,
-                 'last_attested': None, 'csrf_token': None}
-               ], 
-    'csrf_token': None
-}
-
-dur_deriv = ValueWithSignDerivation("duration", "duration_sign")
-num_changes_deriv = ValueWithSignDerivation("num_changes", "num_changes_sign")
-
-deriv = {"construction": [num_changes_deriv], "changes": [dur_deriv]}
-
-# q = Query(deriv)
-# res = q.parse_form(form)
-
-# print(res)
-
-# print(res.tree())
-
