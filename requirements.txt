@@ -19,6 +19,7 @@ plotly
 python-dateutil
 pytz
 six
+sentence-transformers
 SQLAlchemy
 tenacity
 tzdata

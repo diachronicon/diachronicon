@@ -1,164 +1,211 @@
 {% extends "layout.html" %}
 
-{# {% macro make_collapsible_div_attrs(class="", id="") %}
-  class="collapse{{ ' ' + class if class else ''}}"
-  {{ ' id=' + id  if id else ''}}
-
-{% endmacro %} #}
-
+{% block head_links %}
+<link rel="stylesheet" type="text/css" href="/static/content/custom_search_page.css" />
+{% endblock %}
 
 {% block content %}
+<div class="row mt-3">
+    <div class="col-12">
+        <h2>Поиск по конструкциям</h2>
+    </div>
+</div>
 
-<h1 class="mt-3">Поиск конструкций в Диахрониконе</h1>
+{# ------------------------------------------------------------------ #}
+{# Search form                                                          #}
+{# ------------------------------------------------------------------ #}
+<form id="search-form" action="{{ url_for('search.search') }}" method="get">
+    {{ _form.hidden_tag() }}
 
-{% if _form.is_submitted() %}
-<a class="toggle" data-bs-toggle="collapse"
-   href="#search-form" role="button"
-   aria-expanded="{{ 'false' if _form.is_submitted() else 'true' }}"
->
-    <i class="fa fa-fw fa-solid fa-angle-right"></i>
-    Показать форму
-</a>
-{# {% else %} #}
-{% endif %}
-
-<form class="collapse {{ '' if _form.is_submitted() else 'show' }} mt-4" id="search-form" action="/form#results" method="post">
-    {# <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/> #}
-    {# {{ form.csrf_tag }} #}
-
-    
-    {# {%- for _form in form.forms -%} #}
-    {{ _form.csrf_tag }}
-
-    <div class="row">
-        <fieldset name="construction-general" class="col-md-3">
-            <legend>Общее</legend>
-            {{ _form.construction.csrf_tag }}
-
-            {# {{ _form.construction.construction_id }} #}
-            {{ _form.construction.formula }}
-            {{ _form.construction.contemporary_meaning }}
-            {# {{ _form.construction.in_rus_constructicon }} #}
-
-            {# {{ _form.construction.num_changes.label }} #}
-            {# {{ _form.construction.num_changes_sign }}
-            {{ _form.construction.num_changes }} #}
-            <div class="multi-inputs num_changes">
-                {{ _form.construction.num_changes__from }}
-                {{ _form.construction.num_changes__to }}
+    {# Semantic / free-text search — top of form, spans full width #}
+    <div class="card mb-3">
+        <div class="card-header">Поиск по смыслу</div>
+        <div class="card-body">
+            <div class="row g-2 align-items-end">
+                <div class="col-md-10">
+                    {{ _form.construction.semantic_query() }}
+                </div>
+                <div class="col-md-2 d-grid">
+                    <button class="btn btn-primary" type="submit">Искать</button>
+                </div>
             </div>
-        </fieldset>
-        
-        <fieldset name="anchor", class="col-md-3">
-            <legend class="toggle">
-                <a class="collapse-toggle" data-bs-toggle="collapse"
-                 data-bs-target=".anchor-extra" role="button" aria-expanded="false">
-                    <i class="fa fa-fw fa-solid fa-angle-right"></i>
+            <div class="form-text text-muted mt-1">
+                Введите произвольный текст — конструкции будут ранжированы по близости значения.
+            </div>
+        </div>
+    </div>
+
+    {# Exact filters — collapsible #}
+    <div class="accordion mb-3" id="exactFiltersAccordion">
+
+        {# Construction filters #}
+        <div class="accordion-item">
+            <h2 class="accordion-header" id="headingConstruction">
+                <button class="accordion-button collapsed" type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#collapseConstruction"
+                        aria-expanded="false"
+                        aria-controls="collapseConstruction">
+                    Конструкция
+                </button>
+            </h2>
+            <div id="collapseConstruction"
+                 class="accordion-collapse collapse"
+                 aria-labelledby="headingConstruction"
+                 data-bs-parent="#exactFiltersAccordion">
+                <div class="accordion-body">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            {{ _form.construction.formula() }}
+                        </div>
+                        <div class="col-md-6">
+                            {{ _form.construction.contemporary_meaning() }}
+                        </div>
+                        <div class="col-md-4">
+                            {{ _form.construction.in_rus_constructicon() }}
+                        </div>
+                        <div class="col-md-4">
+                            {{ _form.construction.num_changes__from() }}
+                        </div>
+                        <div class="col-md-4">
+                            {{ _form.construction.num_changes__to() }}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {# Anchor filters #}
+        <div class="accordion-item">
+            <h2 class="accordion-header" id="headingAnchor">
+                <button class="accordion-button collapsed" type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#collapseAnchor"
+                        aria-expanded="false"
+                        aria-controls="collapseAnchor">
                     Якорь
-                </a>
-            </legend>
-            {{ _form.anchor.csrf_tag }}
-
-            {{ _form.anchor.synt_function_of_anchor }}
-            <div class="collapse anchor-extra" id="anchor-extra">
-                {{ _form.anchor.anchor_schema }}
+                </button>
+            </h2>
+            <div id="collapseAnchor"
+                 class="accordion-collapse collapse"
+                 aria-labelledby="headingAnchor"
+                 data-bs-parent="#exactFiltersAccordion">
+                <div class="accordion-body">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            {{ _form.anchor.synt_function_of_anchor() }}
+                        </div>
+                        <div class="col-md-6">
+                            {{ _form.anchor.anchor_schema() }}
+                        </div>
+                        <div class="col-md-6">
+                            {{ _form.anchor.anchor_ru() }}
+                        </div>
+                        <div class="col-md-3">
+                            {{ _form.anchor.anchor_length__from() }}
+                        </div>
+                        <div class="col-md-3">
+                            {{ _form.anchor.anchor_length__to() }}
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div class="collapse anchor-extra" id="anchor-extra">
-                {{ _form.anchor.anchor_ru }}
-            </div>
-
-            <div class="multi-inputs num_changes">
-                {{ _form.anchor.anchor_length__from }}
-                {{ _form.anchor.anchor_length__to }}
-            </div>
-        </fieldset>
-    </div>
-    
-    {#
-    <fieldset name="construction-anchor" class="col-md-3">
-        <legend>Якорь</legend>
-        {{ _form.anchor.csrf_tag }}
-
-        {{ _form.anchor.synt_function_of_anchor }}
-        {{ _form.anchor.anchor_schema }}
-        {{ _form.anchor.anchor_ru }}
-    </fieldset> #}
-
-    <div class="row">
-    {% for _change in _form.changes %}
-        {{ _change.csrf_tag }}
-        <fieldset name="changes" class="col-md-3"
-            {# {% if loop.index > 1 %}{{ style="display: none" }}{% endif %} #}
-        >
-            <legend class="toggle">
-                <a class="collapse-toggle" data-bs-toggle="collapse"
-                   data-bs-target=".changes-{{ loop.index }}-extra"
-                   role="button" aria-expanded="false">
-                    <i class="fa fa-fw fa-solid fa-angle-right"></i>
-                    {{ "Этап в истории конструкции" if loop.index == 1 else "и этап в истории конструкции" }}
-                </a>
-            </legend>
-
-            {{ _change.formula }}
-            {# {{ _change.stage_abs }} #}
-            {{ _change.level }}
-
-            <fieldset class="multi-inputs first_attested"
-                        aria-describedby="changes-{{ loop.index }}-first_attested-help"
-                        aria-labelledby="changes-{{ loop.index }}-first_attested-title"
-                >
-                    <legend id="changes-{{ loop.index }}-first_attested-title">Первое вхождение в таком виде</legend>
-                    {{ _change.first_attested__from }}
-                    {{ _change.first_attested__to }}
-                    {# <div class="form-text" id="changes-{{ loop.index }}-first_attested-help">Первое вхождение в таком виде (год)</div> #}
-                </fieldset>
-
-            <fieldset class="multi-inputs last_attested"
-                aria-describedby="changes-{{ loop.index }}-last_attested-help"
-                aria-labelledby="changes-{{ loop.index }}-first_attested-title"
-            >
-                <legend id="changes-{{ loop.index }}-last_attested-title">Последнее вхождение в таком виде</legend>
-                {{ _change.last_attested__from }}
-                {{ _change.last_attested__to }}
-            </fieldset>
-
-            {{ _change.type_of_change }}
-
-            <div class="collapse changes-{{ loop.index }}-extra">
-                {{ _change.subtype_of_change }}
-            </div>
-            <div class="collapse changes-{{ loop.index }}-extra">
-                <fieldset class="multi-inputs duration"
-                    aria-describedby="changes-{{ loop.index }}-duration-help"
-                    aria-labelledby="changes-{{ loop.index }}-duration-title"
-                >
-                    <legend id="changes-{{ loop.index }}-duration-title">Длительность</legend>
-                    {{ _change.duration__from }}
-                    {{ _change.duration__to }}
-                    <div class="form-text" id="changes-{{ loop.index }}-duration-help"></div>
-                </fieldset>
-            </div>
-
-        </fieldset>
-    {%- endfor -%}
-    </div>
-    
-    <div class="row mt-2">
-        <div class="col-1">
-            <button class="btn btn-primary" type="submit">Искать</button>
-            <div id="form-error feedback-invalid"></div>
         </div>
-        <div class="col-1">
-            <input class="btn btn-secondary" type="reset" value="Очистить форму">        
+
+        {# Change filters (first change entry only for now) #}
+        <div class="accordion-item">
+            <h2 class="accordion-header" id="headingChanges">
+                <button class="accordion-button collapsed" type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#collapseChanges"
+                        aria-expanded="false"
+                        aria-controls="collapseChanges">
+                    Изменения
+                </button>
+            </h2>
+            <div id="collapseChanges"
+                 class="accordion-collapse collapse"
+                 aria-labelledby="headingChanges"
+                 data-bs-parent="#exactFiltersAccordion">
+                <div class="accordion-body">
+                    {% set ch = _form.changes[0] %}
+                    <div class="row g-3">
+                        <div class="col-md-6">{{ ch.formula() }}</div>
+                        <div class="col-md-3">{{ ch.level() }}</div>
+                        <div class="col-md-3">{{ ch.stage_abs() }}</div>
+                        <div class="col-md-6">{{ ch.type_of_change() }}</div>
+                        <div class="col-md-6">{{ ch.subtype_of_change() }}</div>
+                        <div class="col-md-3">{{ ch.first_attested__from() }}</div>
+                        <div class="col-md-3">{{ ch.first_attested__to() }}</div>
+                        <div class="col-md-3">{{ ch.last_attested__from() }}</div>
+                        <div class="col-md-3">{{ ch.last_attested__to() }}</div>
+                        <div class="col-md-3">{{ ch.duration__from() }}</div>
+                        <div class="col-md-3">{{ ch.duration__to() }}</div>
+                    </div>
+                </div>
+            </div>
         </div>
+
+    </div>{# end accordion #}
+
+    <div class="d-flex gap-2 mb-4">
+        <button class="btn btn-primary" type="submit">Поиск</button>
+        <a class="btn btn-outline-secondary"
+           href="{{ url_for('search.search') }}">Сбросить</a>
     </div>
 </form>
 
-{% include "_simple_search_result.html" %}
+{# ------------------------------------------------------------------ #}
+{# Results                                                              #}
+{# ------------------------------------------------------------------ #}
+{% if results_by_constr is defined and results_by_constr %}
 
-{% endblock %}
+    <hr>
 
-{% block scripts %}
-<script src="/static/scripts/search_form_parse.js"></script>
-<script src="/static/scripts/add_search_form.js"></script>
+    <div class="d-flex align-items-baseline gap-3 mb-3">
+        <h4 class="mb-0">
+            Результаты
+            <span class="badge bg-secondary ms-1">{{ n_results }}</span>
+        </h4>
+
+        {% if search_mode == 'semantic' %}
+            <span class="badge bg-info text-dark">Семантический поиск</span>
+            {% if semantic_query %}
+                <small class="text-muted">«{{ semantic_query }}»</small>
+            {% endif %}
+        {% elif search_mode == 'hybrid' %}
+            <span class="badge bg-primary">Гибридный поиск</span>
+            {% if semantic_query %}
+                <small class="text-muted">семантика: «{{ semantic_query }}»</small>
+            {% endif %}
+        {% elif search_mode == 'exact' %}
+            <span class="badge bg-success">Точный поиск</span>
+        {% endif %}
+    </div>
+
+    <div class="list-group mb-4">
+        {% for constr_id, rows in results_by_constr.items() %}
+            {% set row = rows[0] %}
+            <a href="{{ url_for('search.construction', index=constr_id) }}"
+               class="list-group-item list-group-item-action">
+                <div class="d-flex w-100 justify-content-between align-items-start">
+                    <div>
+                        <strong>{{ row.name if row.name else row.formula }}</strong>
+                        {% if row.name and row.formula %}
+                            <small class="text-muted ms-2">{{ row.formula }}</small>
+                        {% endif %}
+                    </div>
+                    <small class="text-muted ms-3 flex-shrink-0">#{{ constr_id }}</small>
+                </div>
+            </a>
+        {% endfor %}
+    </div>
+
+{% elif results_by_constr is defined and not results_by_constr and search_mode != 'none' %}
+
+    <hr>
+    <p class="text-muted">Ничего не найдено. Попробуйте изменить запрос.</p>
+
+{% endif %}
+
 {% endblock %}
