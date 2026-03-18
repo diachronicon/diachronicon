@@ -27,7 +27,6 @@ def create_app(test_config_obj=None, remove_wsgi_logger=False):
     else:
         app.config.from_object(test_config_obj)
 
-    # Ensure the instance folder exists
     os.makedirs(app.instance_path, exist_ok=True)
 
     if remove_wsgi_logger:
@@ -71,6 +70,12 @@ def create_app(test_config_obj=None, remove_wsgi_logger=False):
 
     from app.errors import bp as errors_bp
     app.register_blueprint(errors_bp)
+
+    # ------------------------------------------------------------------
+    # CLI commands
+    # ------------------------------------------------------------------
+    from app.search.cli import embeddings_cli
+    app.cli.add_command(embeddings_cli)
 
     if app.debug:
         from werkzeug.debug import DebuggedApplication

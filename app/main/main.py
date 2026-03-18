@@ -49,7 +49,7 @@ from app.search.query_sqlalchemy import (
     SQLSubForm,
     SQLTokensQuery,
 )
-from app.search.search2 import (
+from app.search.routes import (
     group_rows_by_construction,
 )
 from app.utils import (
