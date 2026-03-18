@@ -1,0 +1,59 @@
+{# Partial: renders a table of drafts.
+   Expects: drafts_to_show (list of AnnotationDraft) #}
+<table class="table table-hover">
+    <thead class="table-light">
+        <tr>
+            <th>#</th>
+            <th>Название / формула</th>
+            <th>Статус</th>
+            <th>LLM</th>
+            <th>Обновлено</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for draft in drafts_to_show %}
+        {% set fd = draft.form_data | from_json %}
+        <tr>
+            <td class="text-muted">{{ draft.id }}</td>
+            <td>
+                <span class="font-monospace small">
+                    {{ fd.get('formula') or '—' }}
+                </span>
+                {% if fd.get('name') %}
+                    <br><span class="text-muted small">{{ fd.get('name') }}</span>
+                {% endif %}
+            </td>
+            <td>
+                {% if draft.status == 'submitted' %}
+                    <span class="badge bg-success">опубликовано</span>
+                {% else %}
+                    <span class="badge bg-warning text-dark">черновик</span>
+                {% endif %}
+            </td>
+            <td>
+                {% if draft.llm_provider %}
+                    <span class="badge bg-secondary">{{ draft.llm_provider }}</span>
+                    {% if draft.llm_model %}
+                        <br><span class="text-muted" style="font-size:.7rem">{{ draft.llm_model }}</span>
+                    {% endif %}
+                {% else %}
+                    <span class="text-muted">—</span>
+                {% endif %}
+            </td>
+            <td class="text-muted small">
+                {{ draft.updated_at.strftime('%d.%m.%Y %H:%M') if draft.updated_at else '—' }}
+            </td>
+            <td>
+                {% if draft.status != 'submitted' %}
+                    <a href="{{ url_for('annotation.form', draft_id=draft.id) }}"
+                       class="btn btn-sm btn-primary">Открыть</a>
+                {% else %}
+                    <a href="{{ url_for('annotation.form', draft_id=draft.id) }}"
+                       class="btn btn-sm btn-outline-secondary">Просмотр</a>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>

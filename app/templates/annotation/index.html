@@ -1,0 +1,81 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="container mt-4">
+
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2 class="mb-0">Аннотирование</h2>
+        <a href="{{ url_for('annotation.new') }}" class="btn btn-primary">
+            + Новая аннотация
+        </a>
+    </div>
+
+    {% if drafts %}
+        {% if current_user.role == 'admin' %}
+            {# Admin sees all drafts grouped by status #}
+            {% set submitted = drafts | selectattr('status', 'eq', 'submitted') | list %}
+            {% set in_progress = drafts | rejectattr('status', 'eq', 'submitted') | list %}
+
+            {% if submitted %}
+            <h5 class="text-muted mb-2">Ожидают проверки</h5>
+            <table class="table table-hover mb-4">
+                <thead class="table-light">
+                    <tr>
+                        <th>#</th>
+                        <th>Название / формула</th>
+                        <th>Аннотатор</th>
+                        <th>LLM</th>
+                        <th>Обновлено</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for draft in submitted %}
+                    {% set fd = draft.form_data | from_json %}
+                    <tr>
+                        <td class="text-muted">{{ draft.id }}</td>
+                        <td>
+                            {{ fd.get('name') or fd.get('formula') or '—' }}
+                        </td>
+                        <td>{{ draft.annotator.username }}</td>
+                        <td>
+                            {% if draft.llm_provider %}
+                                <span class="badge bg-secondary">{{ draft.llm_provider }}</span>
+                            {% else %}—{% endif %}
+                        </td>
+                        <td class="text-muted small">
+                            {{ draft.updated_at.strftime('%d.%m.%Y %H:%M') if draft.updated_at else '—' }}
+                        </td>
+                        <td>
+                            <a href="{{ url_for('annotation.form', draft_id=draft.id) }}"
+                               class="btn btn-sm btn-outline-secondary">Открыть</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
+
+            {% if in_progress %}
+            <h5 class="text-muted mb-2">В работе</h5>
+            {% set drafts_to_show = in_progress %}
+            {% include 'annotation/_drafts_table.html' %}
+            {% endif %}
+
+        {% else %}
+            {# Annotator sees their own drafts #}
+            {% set drafts_to_show = drafts %}
+            {% include 'annotation/_drafts_table.html' %}
+        {% endif %}
+
+    {% else %}
+        <div class="text-muted py-5 text-center">
+            <p>У вас пока нет черновиков.</p>
+            <a href="{{ url_for('annotation.new') }}" class="btn btn-outline-primary mt-2">
+                Начать аннотацию
+            </a>
+        </div>
+    {% endif %}
+
+</div>
+{% endblock %}

@@ -1,0 +1,958 @@
+{% extends "layout.html" %}
+
+{% block head_links %}
+<style>
+.annotation-header {
+    background: var(--bs-body-bg, #fff);
+    border-bottom: 1px solid #dee2e6;
+    z-index: 100;
+    padding: .5rem 0;
+}
+.annotation-section {
+    background: #fff;
+    border: 1px solid #dee2e6;
+    border-radius: .5rem;
+    padding: 1.5rem;
+    margin-bottom: 1.25rem;
+}
+.annotation-section h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+    color: #495057;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+}
+.change-row {
+    border: 1px solid #dee2e6;
+    border-radius: .5rem;
+    padding: 1rem;
+    margin-bottom: .75rem;
+    background: #f8f9fa;
+}
+.change-row-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: .75rem;
+}
+.change-row-header .change-title {
+    font-weight: 600;
+    font-size: .9rem;
+    color: #343a40;
+}
+.constraint-row {
+    border: 1px solid #ced4da;
+    border-radius: .375rem;
+    padding: .75rem;
+    margin-bottom: .5rem;
+    background: #fff;
+}
+.save-indicator {
+    font-size: .8rem;
+    transition: color .3s;
+}
+.save-indicator.saving { color: #6c757d; }
+.save-indicator.saved  { color: #198754; }
+.save-indicator.error  { color: #dc3545; }
+.llm-section { background: #f0f4ff; border-color: #c5d3f0; }
+.field-group label {
+    font-size: .82rem;
+    font-weight: 500;
+    color: #6c757d;
+    margin-bottom: .2rem;
+}
+.published-banner {
+    background: #d1e7dd;
+    border: 1px solid #a3cfbb;
+    border-radius: .5rem;
+    padding: .75rem 1rem;
+    margin-bottom: 1rem;
+    color: #0a3622;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid px-3 px-md-4 mt-3">
+
+    {# ── Sticky header bar ─────────────────────────────────────────────────── #}
+    <div class="annotation-header sticky-top px-1 mb-3">
+        <div class="d-flex justify-content-between align-items-center">
+            <div class="d-flex align-items-center gap-3">
+                <a href="{{ url_for('annotation.index') }}" class="text-muted text-decoration-none small">
+                    ← Все аннотации
+                </a>
+                <span class="text-muted small">Черновик #{{ draft.id }}</span>
+                {% if draft.status == 'submitted' %}
+                    <span class="badge bg-success">опубликовано</span>
+                {% else %}
+                    <span class="badge bg-warning text-dark">черновик</span>
+                {% endif %}
+                <span class="save-indicator" id="save-indicator">
+                    <span id="save-text"></span>
+                </span>
+            </div>
+            {% if draft.status != 'submitted' %}
+            <div class="d-flex gap-2">
+                <button type="button" class="btn btn-sm btn-outline-secondary"
+                        id="btn-save" onclick="manualSave()">
+                    Сохранить
+                </button>
+                <button type="button" class="btn btn-sm btn-primary"
+                        id="btn-submit" onclick="submitAnnotation()">
+                    Опубликовать
+                </button>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if draft.status == 'submitted' %}
+    <div class="published-banner">
+        Эта аннотация опубликована как конструкция #{{ draft.construction_id }}.
+        Поля доступны только для чтения.
+    </div>
+    {% endif %}
+
+    {# CSRF meta tag for JS fetch calls #}
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+
+    {# ── Main form ─────────────────────────────────────────────────────────── #}
+    <form id="annotation-form" autocomplete="off">
+
+        {# ── Section 1: Construction ──────────────────────────────────────── #}
+        <div class="annotation-section">
+            <h4>Конструкция</h4>
+            <div class="row g-3">
+                <div class="col-md-6 field-group">
+                    <label for="f-name">Название</label>
+                    <input type="text" id="f-name" data-field="name"
+                           class="form-control form-control-sm"
+                           placeholder="напр. «конструкция с ТАК»"
+                           {{ 'readonly' if draft.status == 'submitted' }}>
+                </div>
+                <div class="col-md-6 field-group">
+                    <label for="f-formula">Формула</label>
+                    <input type="text" id="f-formula" data-field="formula"
+                           class="form-control form-control-sm font-monospace"
+                           placeholder="напр. [NP_nom так VP]"
+                           {{ 'readonly' if draft.status == 'submitted' }}>
+                </div>
+                <div class="col-md-8 field-group">
+                    <label for="f-meaning">Значение (современное)</label>
+                    <textarea id="f-meaning" data-field="contemporary_meaning"
+                              class="form-control form-control-sm" rows="2"
+                              placeholder="Описание значения конструкции"
+                              {{ 'readonly' if draft.status == 'submitted' }}></textarea>
+                </div>
+                <div class="col-md-4 field-group">
+                    <label for="f-variation">Варианты</label>
+                    <textarea id="f-variation" data-field="variation"
+                              class="form-control form-control-sm" rows="2"
+                              placeholder="Описание вариантов"
+                              {{ 'readonly' if draft.status == 'submitted' }}></textarea>
+                </div>
+            </div>
+
+            <hr class="my-3">
+            <div class="row g-3">
+                <div class="col-md-4 field-group">
+                    <label for="f-synt-fn">Синт. функция якоря</label>
+                    <input type="text" id="f-synt-fn" data-field="synt_function_of_anchor"
+                           class="form-control form-control-sm"
+                           list="synt-fn-datalist"
+                           {{ 'readonly' if draft.status == 'submitted' }}>
+                    <datalist id="synt-fn-datalist">
+                        {% for v in ['Argument','Coordinator','Discourse Particle','Government',
+                                     'Matrix Predicate','Modifier','Nominal Quantifier','Object',
+                                     'Parenthetical','Praedicative Expression','Subject',
+                                     'Subordinator','Verb Predicate','Word-Formation'] %}
+                        <option value="{{ v }}">
+                        {% endfor %}
+                    </datalist>
+                </div>
+                <div class="col-md-4 field-group">
+                    <label for="f-anchor-ru">Якорь (рус.)</label>
+                    <input type="text" id="f-anchor-ru" data-field="anchor_ru"
+                           class="form-control form-control-sm"
+                           {{ 'readonly' if draft.status == 'submitted' }}>
+                </div>
+                <div class="col-md-4 field-group">
+                    <label for="f-anchor-eng">Якорь (глоссы)</label>
+                    <input type="text" id="f-anchor-eng" data-field="anchor_eng"
+                           class="form-control form-control-sm"
+                           {{ 'readonly' if draft.status == 'submitted' }}>
+                </div>
+                <div class="col-md-4 field-group">
+                    <label for="f-anchor-schema">Схема якоря</label>
+                    <input type="text" id="f-anchor-schema" data-field="anchor_schema"
+                           class="form-control form-control-sm"
+                           {{ 'readonly' if draft.status == 'submitted' }}>
+                </div>
+                <div class="col-md-3 field-group">
+                    <label class="d-block">&nbsp;</label>
+                    <div class="form-check mt-1">
+                        <input class="form-check-input" type="checkbox"
+                               id="f-in-constructicon" data-field="in_rus_constructicon"
+                               {{ 'disabled' if draft.status == 'submitted' }}>
+                        <label class="form-check-label" for="f-in-constructicon">
+                            Есть в конструктиконе
+                        </label>
+                    </div>
+                </div>
+                <div class="col-md-3 field-group" id="constructicon-id-group">
+                    <label for="f-constructicon-id">ID в конструктиконе</label>
+                    <input type="number" id="f-constructicon-id" data-field="rus_constructicon_id"
+                           class="form-control form-control-sm"
+                           {{ 'readonly' if draft.status == 'submitted' }}>
+                </div>
+            </div>
+
+            <hr class="my-3">
+            <div class="row g-3">
+                <div class="col-md-4 field-group">
+                    <label for="f-group-number">Номер группы</label>
+                    <input type="text" id="f-group-number" data-field="group_number"
+                           class="form-control form-control-sm"
+                           {{ 'readonly' if draft.status == 'submitted' }}>
+                </div>
+                <div class="col-md-8 field-group">
+                    <label for="f-sample">Размеченная выборка</label>
+                    <input type="text" id="f-sample" data-field="annotated_sample"
+                           class="form-control form-control-sm"
+                           {{ 'readonly' if draft.status == 'submitted' }}>
+                </div>
+            </div>
+        </div>
+
+        {# ── Section 2: LLM ───────────────────────────────────────────────── #}
+        {% if draft.status != 'submitted' %}
+        <div class="annotation-section llm-section">
+            <h4>Автоаннотирование</h4>
+            <p class="text-muted small mb-3">
+                Отправьте текущее состояние формы в языковую модель.
+                Ответ будет автоматически разобран и вставлен в поля —
+                вы сможете отредактировать результат вручную.
+                API-ключ используется только в рамках текущего запроса и не сохраняется.
+            </p>
+            <div class="row g-3 align-items-end mb-2">
+                <div class="col-md-3 field-group">
+                    <label for="llm-provider">Провайдер</label>
+                    <select id="llm-provider" class="form-select form-select-sm"
+                            onchange="onProviderChange()">
+                        <option value="openai">OpenAI</option>
+                        <option value="anthropic">Anthropic (Claude)</option>
+                        <option value="gemini">Google Gemini</option>
+                    </select>
+                </div>
+                <div class="col-md-3 field-group">
+                    <label for="llm-model">Модель</label>
+                    <input type="text" id="llm-model" class="form-control form-control-sm"
+                           placeholder="по умолчанию">
+                </div>
+                <div class="col-md-4 field-group">
+                    <label for="llm-key">API-ключ</label>
+                    <input type="password" id="llm-key" class="form-control form-control-sm"
+                           placeholder="sk-…  /  AIzaSy…">
+                </div>
+                <div class="col-md-2">
+                    <button type="button" class="btn btn-sm btn-primary w-100"
+                            id="btn-llm" onclick="runLLM()">
+                        <span id="llm-spinner" class="spinner-border spinner-border-sm d-none"
+                              role="status"></span>
+                        Аннотировать
+                    </button>
+                </div>
+            </div>
+            <div class="row g-3">
+                <div class="col-12 field-group">
+                    <label for="llm-notes">Корпусные данные и примечания</label>
+                    <textarea id="llm-notes" class="form-control form-control-sm" rows="5"
+                              placeholder="Вставьте сюда выборку из корпуса, примеры, хронологические данные или любые другие сведения, которые должны учесть языковая модель при аннотировании. Чем подробнее материал — тем точнее результат."></textarea>
+                    <div class="form-text text-muted">
+                        Этот текст будет отправлен в LLM в качестве корпусных данных.
+                        Он не сохраняется в черновике.
+                    </div>
+                </div>
+            </div>
+            <div id="llm-error" class="alert alert-danger mt-2 d-none small" style="white-space:pre-wrap"></div>
+            <div id="llm-success" class="alert alert-success mt-2 d-none small">
+                Форма заполнена. Проверьте и отредактируйте результат.
+            </div>
+            <div id="llm-raw-report" class="mt-2 d-none">
+                <details>
+                    <summary class="text-muted small" style="cursor:pointer">
+                        Исходный ответ LLM (для проверки)
+                    </summary>
+                    <pre id="llm-raw-text"
+                         class="mt-1 p-2 border rounded small"
+                         style="max-height:300px;overflow-y:auto;white-space:pre-wrap;font-size:.75rem"></pre>
+                </details>
+            </div>
+        </div>
+        {% endif %}
+
+        {# ── Section 3: Changes ───────────────────────────────────────────── #}
+        <div class="annotation-section">
+            <h4>Изменения</h4>
+            <div id="changes-container"></div>
+
+            {% if draft.status != 'submitted' %}
+            <button type="button" class="btn btn-sm btn-outline-primary mt-1"
+                    onclick="addChange(null)">
+                + Добавить изменение
+            </button>
+            {% endif %}
+        </div>
+
+    </form>
+</div>
+
+{# ── Change row HTML template (hidden, cloned by JS) ──────────────────────── #}
+<template id="change-row-tpl">
+    <div class="change-row" data-change-index="">
+        <div class="change-row-header">
+            <span class="change-title">Изменение <span class="change-num"></span></span>
+            {% if draft.status != 'submitted' %}
+            <button type="button" class="btn btn-sm btn-outline-danger btn-remove-change"
+                    onclick="removeChange(this)">✕ Удалить</button>
+            {% endif %}
+        </div>
+        <div class="row g-2">
+            <div class="col-12 field-group">
+                <label>Краткое описание изменения</label>
+                <input type="text" data-field="change_name"
+                       class="form-control form-control-sm"
+                       placeholder="напр. «Идиоматизация: попасть в точку = метко угадать»"
+                       {{ 'readonly' if draft.status == 'submitted' }}>
+            </div>
+            <div class="col-md-6 field-group">
+                <label>Формула</label>
+                <input type="text" data-field="stage"
+                       class="form-control form-control-sm font-monospace"
+                       placeholder="напр. VP в (самую) точку"
+                       {{ 'readonly' if draft.status == 'submitted' }}>
+            </div>
+            <div class="col-md-6 field-group">
+                <label>Отношение</label>
+                <input type="text" data-field="former_change"
+                       class="form-control form-control-sm"
+                       list="relation-datalist"
+                       placeholder="напр. «Исходная форма», «Следует за 1», «Сопутствует 2»"
+                       {{ 'readonly' if draft.status == 'submitted' }}>
+                <datalist id="relation-datalist">
+                    <option value="Исходная форма">
+                    <option value="Следует за 1">
+                    <option value="Следует за 2">
+                    <option value="Следует за 3">
+                    <option value="Сопутствует 1">
+                    <option value="Сопутствует 2">
+                    <option value="Сопутствует 3">
+                </datalist>
+            </div>
+            </div>
+            <div class="col-md-3 field-group">
+                <label>Уровень</label>
+                <select data-field="level" class="form-select form-select-sm change-level-select"
+                        onchange="onLevelChange(this)"
+                        {{ 'disabled' if draft.status == 'submitted' }}>
+                    <option value="">—</option>
+                    <option value="source">Источник (source)</option>
+                    <option value="synt">Синтаксическое (synt)</option>
+                    <option value="sem">Семантическое (sem)</option>
+                </select>
+            </div>
+            <div class="col-md-5 field-group">
+                <label>Тип изменения</label>
+                <input type="text" data-field="type_of_change"
+                       class="form-control form-control-sm change-type-input"
+                       list="" placeholder="выберите тип"
+                       {{ 'readonly' if draft.status == 'submitted' }}>
+            </div>
+            <div class="col-md-4 field-group">
+                <label>Подтип изменения</label>
+                <input type="text" data-field="subtype_of_change"
+                       class="form-control form-control-sm change-subtype-input"
+                       list="" placeholder="выберите подтип"
+                       {{ 'readonly' if draft.status == 'submitted' }}>
+            </div>
+            <div class="col-md-3 field-group">
+                <label>Первое вхождение</label>
+                <input type="text" data-field="first_attested"
+                       class="form-control form-control-sm"
+                       placeholder="напр. 1750"
+                       {{ 'readonly' if draft.status == 'submitted' }}>
+            </div>
+            <div class="col-md-3 field-group">
+                <label>Последнее вхождение</label>
+                <input type="text" data-field="last_attested"
+                       class="form-control form-control-sm"
+                       placeholder="напр. 1820"
+                       {{ 'readonly' if draft.status == 'submitted' }}>
+            </div>
+            <div class="col-md-6 field-group">
+                <label>Пример первого вхождения</label>
+                <textarea data-field="first_example"
+                          class="form-control form-control-sm" rows="2"
+                          {{ 'readonly' if draft.status == 'submitted' }}></textarea>
+            </div>
+            <div class="col-md-6 field-group">
+                <label>Пример последнего вхождения</label>
+                <textarea data-field="last_example"
+                          class="form-control form-control-sm" rows="2"
+                          {{ 'readonly' if draft.status == 'submitted' }}></textarea>
+            </div>
+            <div class="col-12 field-group">
+                <label>Комментарий</label>
+                <textarea data-field="comment"
+                          class="form-control form-control-sm" rows="2"
+                          {{ 'readonly' if draft.status == 'submitted' }}></textarea>
+            </div>
+        </div>
+
+        {# Constraints sub-section #}
+        <div class="mt-3">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <small class="text-muted fw-bold">Ограничения</small>
+                {% if draft.status != 'submitted' %}
+                <button type="button" class="btn btn-xs btn-outline-secondary"
+                        style="font-size:.75rem;padding:.15rem .5rem"
+                        onclick="addConstraint(this, null)">+ Ограничение</button>
+                {% endif %}
+            </div>
+            <div class="constraints-container"></div>
+        </div>
+    </div>
+</template>
+
+{# ── Constraint row HTML template (hidden, cloned by JS) ──────────────────── #}
+<template id="constraint-row-tpl">
+    <div class="constraint-row">
+        <div class="row g-2">
+            <div class="col-md-3 field-group">
+                <label>Элемент</label>
+                <input type="text" data-field="element"
+                       class="form-control form-control-sm"
+                       {{ 'readonly' if draft.status == 'submitted' }}>
+            </div>
+            <div class="col-md-4 field-group">
+                <label>Синтаксическое ограничение</label>
+                <input type="text" data-field="syntactic"
+                       class="form-control form-control-sm"
+                       {{ 'readonly' if draft.status == 'submitted' }}>
+            </div>
+            <div class="col-md-4 field-group">
+                <label>Семантическое ограничение</label>
+                <input type="text" data-field="semantic"
+                       class="form-control form-control-sm"
+                       {{ 'readonly' if draft.status == 'submitted' }}>
+            </div>
+            {% if draft.status != 'submitted' %}
+            <div class="col-md-1 d-flex align-items-end">
+                <button type="button" class="btn btn-sm btn-outline-danger w-100"
+                        onclick="removeConstraint(this)">✕</button>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</template>
+{% endblock %}
+{% block scripts %}
+<script>
+// ── Constants injected from Flask ──────────────────────────────────────────
+const DRAFT_ID       = {{ draft.id }};
+const IS_PUBLISHED   = {{ 'true' if draft.status == 'submitted' else 'false' }};
+const SAVE_URL       = "{{ url_for('annotation.save',   draft_id=draft.id) }}";
+const LLM_URL        = "{{ url_for('annotation.llm',    draft_id=draft.id) }}";
+const SUBMIT_URL     = "{{ url_for('annotation.submit', draft_id=draft.id) }}";
+const CSRF_TOKEN     = document.querySelector('meta[name="csrf-token"]').content;
+
+// Change taxonomy: { synt: { "type": ["sub1",…], … }, sem: {…}, source: {…} }
+const TAXONOMY = {{ taxonomy | tojson }};
+
+// Initial form state rendered by the server
+const INITIAL_DATA = {{ form_data | tojson }};
+
+// ── Datalist management ────────────────────────────────────────────────────
+// Each change row needs its own pair of datalists for type/subtype cascades.
+// We create them lazily per change row.
+
+let _datalistCounter = 0;
+
+function createDatalistsForRow(row, level) {
+    const typeInput    = row.querySelector('[data-field="type_of_change"]');
+    const subtypeInput = row.querySelector('[data-field="subtype_of_change"]');
+
+    const dlTypeId    = `dl-type-${++_datalistCounter}`;
+    const dlSubtypeId = `dl-subtype-${_datalistCounter}`;
+
+    // Create or reuse datalists attached to the row
+    let dlType = row.querySelector('.dl-type-list');
+    if (!dlType) {
+        dlType = document.createElement('datalist');
+        dlType.className = 'dl-type-list';
+        row.appendChild(dlType);
+    }
+    let dlSubtype = row.querySelector('.dl-subtype-list');
+    if (!dlSubtype) {
+        dlSubtype = document.createElement('datalist');
+        dlSubtype.className = 'dl-subtype-list';
+        row.appendChild(dlSubtype);
+    }
+
+    dlType.id    = dlTypeId;
+    dlSubtype.id = dlSubtypeId;
+
+    typeInput.setAttribute('list', dlTypeId);
+    subtypeInput.setAttribute('list', dlSubtypeId);
+
+    populateTypesDatalist(dlType, dlSubtype, level);
+}
+
+function populateTypesDatalist(dlType, dlSubtype, level) {
+    dlType.innerHTML    = '';
+    dlSubtype.innerHTML = '';
+
+    const levelData = level ? TAXONOMY[level] : null;
+    if (!levelData) {
+        // No level — show all types/subtypes
+        for (const [, lvl] of Object.entries(TAXONOMY)) {
+            for (const [type, subs] of Object.entries(lvl)) {
+                dlType.innerHTML += `<option value="${escHtml(type)}">`;
+                subs.forEach(s => dlSubtype.innerHTML += `<option value="${escHtml(s)}">`);
+            }
+        }
+        return;
+    }
+    for (const [type, subs] of Object.entries(levelData)) {
+        dlType.innerHTML += `<option value="${escHtml(type)}">`;
+        subs.forEach(s => dlSubtype.innerHTML += `<option value="${escHtml(s)}">`);
+    }
+}
+
+function escHtml(str) {
+    return String(str)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// ── Level cascade ──────────────────────────────────────────────────────────
+function onLevelChange(select) {
+    const row      = select.closest('.change-row');
+    const dlType   = row.querySelector('.dl-type-list');
+    const dlSubtype = row.querySelector('.dl-subtype-list');
+    if (dlType && dlSubtype) {
+        populateTypesDatalist(dlType, dlSubtype, select.value);
+    }
+    scheduleAutosave();
+}
+
+// ── Change rows ────────────────────────────────────────────────────────────
+let _changeCounter = 0;
+
+function addChange(data) {
+    if (IS_PUBLISHED) return;
+
+    const tpl       = document.getElementById('change-row-tpl');
+    const fragment  = tpl.content.cloneNode(true);
+    const row       = fragment.querySelector('.change-row');
+
+    const idx = _changeCounter++;
+    row.dataset.changeIndex = idx;
+    row.querySelector('.change-num').textContent = idx + 1;
+
+    // Initialise datalists for this row
+    const levelSelect = row.querySelector('[data-field="level"]');
+    createDatalistsForRow(row, levelSelect.value);
+
+    // Re-attach level change handler (cloned from template doesn't inherit dynamic state)
+    levelSelect.addEventListener('change', () => onLevelChange(levelSelect));
+
+    // Attach autosave to all inputs in the new row
+    row.querySelectorAll('input, textarea, select').forEach(el => {
+        el.addEventListener('input', scheduleAutosave);
+        el.addEventListener('change', scheduleAutosave);
+    });
+
+    // Populate from data if provided (from LLM response or initial load)
+    if (data) {
+        populateChangeRow(row, data);
+    }
+
+    document.getElementById('changes-container').appendChild(row);
+    return row;
+}
+
+function populateChangeRow(row, data) {
+    const fields = ['change_name','stage','former_change','level','type_of_change',
+                    'subtype_of_change','first_attested','last_attested',
+                    'first_example','last_example','comment'];
+
+    fields.forEach(f => {
+        const el = row.querySelector(`[data-field="${f}"]`);
+        if (!el) return;
+        if (el.tagName === 'SELECT') {
+            el.value = data[f] || '';
+        } else if (el.type === 'checkbox') {
+            el.checked = Boolean(data[f]);
+        } else {
+            el.value = data[f] || '';
+        }
+    });
+
+    // Update datalist cascade after setting level
+    const levelSelect = row.querySelector('[data-field="level"]');
+    const dlType      = row.querySelector('.dl-type-list');
+    const dlSubtype   = row.querySelector('.dl-subtype-list');
+    if (dlType && dlSubtype) {
+        populateTypesDatalist(dlType, dlSubtype, levelSelect.value);
+    }
+
+    // Constraints
+    (data.constraints || []).forEach(c => addConstraint(row.querySelector('.constraints-container'), c, true));
+}
+
+function removeChange(btn) {
+    if (IS_PUBLISHED) return;
+    btn.closest('.change-row').remove();
+    renumberChanges();
+    scheduleAutosave();
+}
+
+function renumberChanges() {
+    document.querySelectorAll('#changes-container .change-row').forEach((row, i) => {
+        row.querySelector('.change-num').textContent = i + 1;
+        row.dataset.changeIndex = i;
+    });
+}
+
+// ── Constraint rows ────────────────────────────────────────────────────────
+function addConstraint(triggerOrContainer, data, fromContainer) {
+    if (IS_PUBLISHED) return;
+
+    // triggerOrContainer can be a button (from onclick) or the container div directly
+    let container;
+    if (fromContainer) {
+        container = triggerOrContainer;
+    } else {
+        // Button was clicked — walk up to .change-row, then find .constraints-container
+        const changeRow = triggerOrContainer.closest('.change-row');
+        container = changeRow.querySelector('.constraints-container');
+    }
+
+    const tpl      = document.getElementById('constraint-row-tpl');
+    const fragment = tpl.content.cloneNode(true);
+    const row      = fragment.querySelector('.constraint-row');
+
+    if (data) {
+        ['element', 'syntactic', 'semantic'].forEach(f => {
+            const el = row.querySelector(`[data-field="${f}"]`);
+            if (el) el.value = data[f] || '';
+        });
+    }
+
+    row.querySelectorAll('input').forEach(el => {
+        el.addEventListener('input', scheduleAutosave);
+    });
+
+    container.appendChild(row);
+    scheduleAutosave();
+}
+
+function removeConstraint(btn) {
+    if (IS_PUBLISHED) return;
+    btn.closest('.constraint-row').remove();
+    scheduleAutosave();
+}
+
+// ── Serialisation ──────────────────────────────────────────────────────────
+function serializeForm() {
+    const get = id => (document.getElementById(id) || {}).value || '';
+    const checked = id => !!(document.getElementById(id) || {}).checked;
+
+    const data = {
+        name:                   get('f-name'),
+        formula:                get('f-formula'),
+        contemporary_meaning:   get('f-meaning'),
+        variation:              get('f-variation'),
+        synt_function_of_anchor: get('f-synt-fn'),
+        anchor_ru:              get('f-anchor-ru'),
+        anchor_eng:             get('f-anchor-eng'),
+        anchor_schema:          get('f-anchor-schema'),
+        in_rus_constructicon:   checked('f-in-constructicon'),
+        rus_constructicon_id:   parseInt(get('f-constructicon-id')) || null,
+        group_number:           get('f-group-number'),
+        annotated_sample:       get('f-sample'),
+        changes: [],
+    };
+
+    document.querySelectorAll('#changes-container .change-row').forEach(row => {
+        const fld = f => (row.querySelector(`[data-field="${f}"]`) || {}).value || '';
+        const change = {
+            change_name:      fld('change_name'),
+            stage:            fld('stage'),
+            former_change:    fld('former_change'),
+            level:            fld('level'),
+            type_of_change:   fld('type_of_change'),
+            subtype_of_change: fld('subtype_of_change'),
+            first_attested:   fld('first_attested'),
+            last_attested:    fld('last_attested'),
+            first_example:    fld('first_example'),
+            last_example:     fld('last_example'),
+            comment:          fld('comment'),
+            constraints: [],
+        };
+
+        row.querySelectorAll('.constraint-row').forEach(cr => {
+            const cf = f => (cr.querySelector(`[data-field="${f}"]`) || {}).value || '';
+            change.constraints.push({
+                element:   cf('element'),
+                syntactic: cf('syntactic'),
+                semantic:  cf('semantic'),
+            });
+        });
+
+        data.changes.push(change);
+    });
+
+    return data;
+}
+
+function deserializeForm(data) {
+    if (!data || typeof data !== 'object') return;
+
+    const set = (id, val) => {
+        const el = document.getElementById(id);
+        if (el) el.value = val || '';
+    };
+
+    set('f-name',            data.name);
+    set('f-formula',         data.formula);
+    set('f-meaning',         data.contemporary_meaning);
+    set('f-variation',       data.variation);
+    set('f-synt-fn',         data.synt_function_of_anchor);
+    set('f-anchor-ru',       data.anchor_ru);
+    set('f-anchor-eng',      data.anchor_eng);
+    set('f-anchor-schema',   data.anchor_schema);
+    set('f-group-number',    data.group_number);
+    set('f-sample',          data.annotated_sample);
+
+    const cbConstr = document.getElementById('f-in-constructicon');
+    if (cbConstr) cbConstr.checked = Boolean(data.in_rus_constructicon);
+
+    const idField = document.getElementById('f-constructicon-id');
+    if (idField) idField.value = data.rus_constructicon_id != null ? data.rus_constructicon_id : '';
+
+    // Clear and rebuild change rows
+    document.getElementById('changes-container').innerHTML = '';
+    _changeCounter = 0;
+    (data.changes || []).forEach(ch => addChange(ch));
+}
+
+// ── Autosave ───────────────────────────────────────────────────────────────
+let _saveTimer = null;
+
+function scheduleAutosave() {
+    if (IS_PUBLISHED) return;
+    clearTimeout(_saveTimer);
+    _saveTimer = setTimeout(performSave, 1500);
+    setSaveStatus('saving', 'Сохранение…');
+}
+
+function manualSave() {
+    clearTimeout(_saveTimer);
+    performSave();
+}
+
+async function performSave() {
+    if (IS_PUBLISHED) return;
+    setSaveStatus('saving', 'Сохранение…');
+    try {
+        const resp = await jsonPost(SAVE_URL, serializeForm());
+        const body = await resp.json();
+        if (resp.ok) {
+            setSaveStatus('saved', `Сохранено в ${body.updated_at}`);
+        } else {
+            setSaveStatus('error', body.error || 'Ошибка сохранения');
+        }
+    } catch (e) {
+        setSaveStatus('error', 'Ошибка сети');
+    }
+}
+
+function setSaveStatus(cls, text) {
+    const el = document.getElementById('save-indicator');
+    if (!el) return;
+    el.className = `save-indicator ${cls}`;
+    document.getElementById('save-text').textContent = text;
+}
+
+// ── LLM integration ────────────────────────────────────────────────────────
+const DEFAULT_MODELS = {
+    openai:    'gpt-4o',
+    anthropic: 'claude-sonnet-4-5-20251001',
+    gemini:    'gemini-2.0-flash',
+};
+
+const KEY_PLACEHOLDERS = {
+    openai:    'sk-…',
+    anthropic: 'sk-ant-…',
+    gemini:    'AIzaSy…',
+};
+
+function onProviderChange() {
+    const provider = document.getElementById('llm-provider').value;
+    const modelInput = document.getElementById('llm-model');
+    const keyInput   = document.getElementById('llm-key');
+    modelInput.placeholder = DEFAULT_MODELS[provider] || '';
+    keyInput.placeholder   = KEY_PLACEHOLDERS[provider] || '';
+}
+
+async function runLLM() {
+    const provider  = document.getElementById('llm-provider').value;
+    const model     = document.getElementById('llm-model').value.trim();
+    const api_key   = document.getElementById('llm-key').value.trim();
+
+    const errDiv  = document.getElementById('llm-error');
+    const okDiv   = document.getElementById('llm-success');
+    const btn     = document.getElementById('btn-llm');
+    const spinner = document.getElementById('llm-spinner');
+
+    errDiv.classList.add('d-none');
+    okDiv.classList.add('d-none');
+
+    if (!api_key) {
+        errDiv.textContent = 'Введите API-ключ.';
+        errDiv.classList.remove('d-none');
+        return;
+    }
+
+    btn.disabled = true;
+    spinner.classList.remove('d-none');
+
+    try {
+        const resp = await jsonPost(LLM_URL, {
+            provider,
+            api_key,
+            model: model || null,
+            notes: document.getElementById('llm-notes').value.trim(),
+            form_data: serializeForm(),
+        });
+        const body = await resp.json();
+
+        if (!resp.ok) {
+            let msg = body.error || `Ошибка ${resp.status}`;
+            if (body.raw_report) {
+                msg += '\n\nОтвет LLM (сырой):\n' + body.raw_report.slice(0, 800);
+            }
+            errDiv.textContent = msg;
+            errDiv.classList.remove('d-none');
+            return;
+        }
+
+        // Show raw report in a collapsible block
+        const reportArea = document.getElementById('llm-raw-report');
+        if (reportArea && body.raw_report) {
+            document.getElementById('llm-raw-text').textContent = body.raw_report;
+            reportArea.classList.remove('d-none');
+        }
+
+        // Populate form from LLM result
+        deserializeForm(body.data);
+        okDiv.classList.remove('d-none');
+        setSaveStatus('saving', 'Сохранение…');
+        setTimeout(performSave, 300);
+
+    } catch (e) {
+        errDiv.textContent = 'Ошибка сети: ' + e.message;
+        errDiv.classList.remove('d-none');
+    } finally {
+        btn.disabled = false;
+        spinner.classList.add('d-none');
+    }
+}
+
+// ── Submit ─────────────────────────────────────────────────────────────────
+async function submitAnnotation() {
+    if (!confirm('Опубликовать конструкцию? После публикации поля нельзя изменить.')) return;
+
+    const btn = document.getElementById('btn-submit');
+    btn.disabled = true;
+    btn.textContent = 'Публикация…';
+
+    try {
+        const resp = await jsonPost(SUBMIT_URL, serializeForm());
+        // Server will redirect; if JSON response came back it means an error
+        if (resp.redirected) {
+            window.location.href = resp.url;
+            return;
+        }
+        const body = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            alert(body.error || `Ошибка ${resp.status}`);
+            btn.disabled = false;
+            btn.textContent = 'Опубликовать';
+        } else {
+            window.location.href = "{{ url_for('annotation.index') }}";
+        }
+    } catch (e) {
+        alert('Ошибка сети: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Опубликовать';
+    }
+}
+
+// ── HTTP helper ────────────────────────────────────────────────────────────
+function jsonPost(url, data) {
+    return fetch(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': CSRF_TOKEN,
+        },
+        body: JSON.stringify(data),
+        redirect: 'follow',
+    });
+}
+
+// ── Constructicon ID visibility ────────────────────────────────────────────
+document.getElementById('f-in-constructicon').addEventListener('change', function () {
+    document.getElementById('constructicon-id-group').style.display =
+        this.checked ? '' : 'none';
+    scheduleAutosave();
+});
+
+// ── Attach autosave to all static top-level fields ─────────────────────────
+document.querySelectorAll(
+    '#annotation-form input:not([data-field]),#annotation-form textarea:not([data-field]),#annotation-form select:not([data-field])'
+).forEach(el => {
+    el.addEventListener('input',  scheduleAutosave);
+    el.addEventListener('change', scheduleAutosave);
+});
+// Also the top-level named fields
+['f-name','f-formula','f-meaning','f-variation','f-synt-fn','f-anchor-ru',
+ 'f-anchor-eng','f-anchor-schema','f-constructicon-id','f-group-number','f-sample'
+].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', scheduleAutosave);
+});
+
+// ── Initialise provider defaults ───────────────────────────────────────────
+onProviderChange();
+
+// ── Hide constructicon id if not checked initially ─────────────────────────
+const cbConstrInit = document.getElementById('f-in-constructicon');
+if (cbConstrInit && !cbConstrInit.checked) {
+    document.getElementById('constructicon-id-group').style.display = 'none';
+}
+
+// ── Populate form from server-rendered initial data ────────────────────────
+deserializeForm(INITIAL_DATA);
+
+// Show initial save timestamp if draft has been modified before
+{% if draft.updated_at and draft.status != 'submitted' %}
+setSaveStatus('saved', 'Сохранено в {{ draft.updated_at.strftime("%H:%M:%S") }}');
+{% endif %}
+</script>
+{% endblock %}

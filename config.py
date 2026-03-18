@@ -37,11 +37,15 @@ class Config(object):
     # ------------------------------------------------------------------
     OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
     ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY')
+    GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 
     # Default models used when the annotator does not specify one
     OPENAI_DEFAULT_MODEL = os.environ.get('OPENAI_DEFAULT_MODEL') or 'gpt-4o'
     ANTHROPIC_DEFAULT_MODEL = (
         os.environ.get('ANTHROPIC_DEFAULT_MODEL') or 'claude-sonnet-4-5-20251001'
+    )
+    GEMINI_DEFAULT_MODEL = (
+        os.environ.get('GEMINI_DEFAULT_MODEL') or 'gemini-2.0-flash'
     )
 
 
@@ -52,6 +56,8 @@ class TestConfig(Config):
     LOGGING_FILE = os.environ.get('FLASK_LOGGING_FILE') or 'logs/test.log'
     # Use an in-memory database for tests
     SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
+    # Disable CSRF for test client POSTs
+    WTF_CSRF_ENABLED = False
 
 
 loggingConfig = {
