@@ -1,10 +1,12 @@
-﻿import logging
+﻿import json
+import logging
 import os
 
 from werkzeug.datastructures import ImmutableOrderedMultiDict
 from flask import Flask, send_from_directory
 from flask.wrappers import Request
 from flask_login import LoginManager
+from flask_wtf.csrf import CSRFProtect
 
 from config import Config, loggingConfig
 import app.logging_utils as logging_utils
@@ -12,6 +14,7 @@ import app.logging_utils as logging_utils
 logger = logging_utils.init_logger(Config.LOGGING_FILE, loggingConfig)
 
 login_manager = LoginManager()
+csrf = CSRFProtect()
 
 
 class RequestWithOrderedFormData(Request):
@@ -57,6 +60,18 @@ def create_app(test_config_obj=None, remove_wsgi_logger=False):
         return app.db_session.get(User, int(user_id))
 
     # ------------------------------------------------------------------
+    # CSRF protection
+    # Validates X-CSRFToken header on JSON POST requests from the
+    # annotation form's fetch() calls.
+    # ------------------------------------------------------------------
+    csrf.init_app(app)
+
+    # ------------------------------------------------------------------
+    # Jinja2 custom filters
+    # ------------------------------------------------------------------
+    app.jinja_env.filters['from_json'] = lambda s: json.loads(s or '{}')
+
+    # ------------------------------------------------------------------
     # Blueprints
     # ------------------------------------------------------------------
     from app.auth import bp as auth_bp
@@ -70,6 +85,9 @@ def create_app(test_config_obj=None, remove_wsgi_logger=False):
 
     from app.errors import bp as errors_bp
     app.register_blueprint(errors_bp)
+
+    from app.annotation import bp as annotation_bp
+    app.register_blueprint(annotation_bp)
 
     # ------------------------------------------------------------------
     # CLI commands
